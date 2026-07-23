@@ -20,4 +20,32 @@ public struct Person: Sendable, Hashable, Codable {
         self.name = name
         self.relationship = relationship?.nonBlank
     }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case relationship
+    }
+
+    /// Decoding runs the same validation and trimming as the initializer.
+    ///
+    /// The synthesized `init(from:)` would assign `name` straight through, and
+    /// this is not a hypothetical door: SwiftData persists `[Person]` as a
+    /// Codable composite attribute, so every read from the capture store comes
+    /// back this way. Without the check the invariant would hold at capture
+    /// time and evaporate on the next launch.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let name = try container.decode(String.self, forKey: .name)
+        guard let person = Person(
+            name: name,
+            relationship: try container.decodeIfPresent(String.self, forKey: .relationship)
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .name,
+                in: container,
+                debugDescription: "A person's name cannot be empty or whitespace only."
+            )
+        }
+        self = person
+    }
 }
