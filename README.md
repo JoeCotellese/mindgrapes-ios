@@ -42,3 +42,12 @@ locally rather than committing it.
 The app talks to a Mind Grapes server over its bearer-authed REST doors, not
 over MCP (SPEC section 2, decision 1). Phase 1 needs server-side changes
 tracked as issues in the server repo; they are summarized in SPEC section 14.
+
+The server URL is configured at runtime, so this app works against any
+Mind Grapes deployment. Nothing about a particular host is baked into the
+binary, which is why the OAuth callback uses a private-use scheme rather than
+a Universal Link (SPEC section 5.2).
+
+## License
+
+[MIT](LICENSE) &copy; 2026 Joe Cotellese
