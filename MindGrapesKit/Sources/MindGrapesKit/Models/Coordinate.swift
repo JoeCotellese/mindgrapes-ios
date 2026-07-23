@@ -20,4 +20,33 @@ public struct Coordinate: Sendable, Hashable, Codable {
         self.latitude = latitude
         self.longitude = longitude
     }
+
+    enum CodingKeys: String, CodingKey {
+        case latitude
+        case longitude
+    }
+
+    /// Decoding runs the same validation as the initializer.
+    ///
+    /// The synthesized `init(from:)` would accept any pair of doubles, which
+    /// would let a stored row hand the encoder a fix the server answers `400`
+    /// for. See ``Person/init(from:)`` for why the decoding path is reachable
+    /// at all.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let latitude = try container.decode(Double.self, forKey: .latitude)
+        let longitude = try container.decode(Double.self, forKey: .longitude)
+        guard let coordinate = Coordinate(latitude: latitude, longitude: longitude) else {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: container.codingPath,
+                    debugDescription: """
+                        Coordinates must be finite, with latitude in [-90, 90] and \
+                        longitude in [-180, 180]; got (\(latitude), \(longitude)).
+                        """
+                )
+            )
+        }
+        self = coordinate
+    }
 }
