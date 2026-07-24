@@ -11,6 +11,21 @@ import Foundation
 /// This is the thin subset item #9 needs for Slice 1: manual URL entry plus the
 /// `/healthz` probe. QR parsing is Slice 7.
 public enum ServerDiscovery {
+    /// What the `/healthz` probe learned about a typed URL. Three states because
+    /// the connect screen has to tell the user *which* thing is wrong: the URL
+    /// (`wrongHost`) or the connection (`unreachable`).
+    public enum Reachability: Sendable, Equatable {
+        /// A Mind Grapes `/healthz` answered `ok`.
+        case reachable
+        /// Something answered, but it is not a healthy Mind Grapes probe: a
+        /// captive portal, an unrelated site, a `4xx`. The URL is the thing to
+        /// fix.
+        case wrongHost
+        /// Nothing answered, or the server is having a bad minute (a transport
+        /// failure or a `5xx`). Says nothing about whether the URL is right.
+        case unreachable
+    }
+
     /// Normalizes what the user typed into a base `URL`, or `nil` when the input
     /// cannot be one.
     ///
@@ -44,5 +59,30 @@ public enum ServerDiscovery {
               let host = components.host, !host.isEmpty
         else { return nil }
         return components.url
+    }
+}
+
+extension BrainClient {
+    /// The `/healthz` probe reduced to a single value for the connect screen.
+    ///
+    /// `checkHealth()` already does the real work (no bearer, body must read
+    /// `ok`); this only classifies its outcome without throwing, so a Check
+    /// button can render a result directly.
+    public func probeReachability() async -> ServerDiscovery.Reachability {
+        do {
+            try await checkHealth()
+            return .reachable
+        } catch let error as BrainClientError {
+            // Reuse the retry classifier rather than re-switch on status. A
+            // retryable failure is a transport error or a 5xx: the server, not
+            // the URL, so `unreachable`. Everything else is a live server giving
+            // a non-`ok` answer (captive portal, 4xx, 200-not-`ok`), so the URL
+            // is suspect: `wrongHost`.
+            return error.retryDisposition == .retry ? .unreachable : .wrongHost
+        } catch {
+            // checkHealth() only ever throws BrainClientError; this arm is here
+            // for exhaustiveness and treats an unknown error as a bad answer.
+            return .wrongHost
+        }
     }
 }

@@ -50,3 +50,59 @@ struct ServerDiscoveryNormalizationTests {
         #expect(ServerDiscovery.normalizedURL(from: input) == nil)
     }
 }
+
+// MARK: - Reachability probe (scripted)
+
+/// Serialized because `DiscoveryStubURLProtocol` scripts answers through
+/// process-global state, like the other stub-backed suites.
+@Suite("ServerDiscovery reachability", .serialized)
+struct ServerDiscoveryProbeTests {
+    private let subject = BrainClient(
+        config: ServerConfig(baseURL: URL(string: "https://grapes.example.ts.net")!),
+        session: DiscoveryStubURLProtocol.makeSession()
+    )
+
+    @Test func aMindGrapesServerAnsweringOKIsReachable() async {
+        DiscoveryStubURLProtocol.install(status: 200, text: "ok")
+        defer { DiscoveryStubURLProtocol.reset() }
+
+        #expect(await subject.probeReachability() == .reachable)
+    }
+
+    @Test func aCaptivePortalAnsweringA200IsTheWrongHost() async {
+        // The probe reached a live server, but it is not Mind Grapes: the URL is
+        // the thing to fix, not the connection.
+        DiscoveryStubURLProtocol.install(status: 200, text: "<!DOCTYPE html><title>router</title>")
+        defer { DiscoveryStubURLProtocol.reset() }
+
+        #expect(await subject.probeReachability() == .wrongHost)
+    }
+
+    @Test func a404IsTheWrongHost() async {
+        // Something answered HTTP but has no /healthz. Not a Mind Grapes server.
+        DiscoveryStubURLProtocol.install(status: 404)
+        defer { DiscoveryStubURLProtocol.reset() }
+
+        #expect(await subject.probeReachability() == .wrongHost)
+    }
+
+    @Test(
+        "a server-side hiccup reads as unreachable, not wrong host",
+        arguments: [502, 503]
+    )
+    func aServerErrorIsUnreachable(status: Int) async {
+        // DNS resolved and something answered, but a 5xx says nothing useful
+        // about the URL, so telling the user to fix it would be wrong.
+        DiscoveryStubURLProtocol.install(status: status)
+        defer { DiscoveryStubURLProtocol.reset() }
+
+        #expect(await subject.probeReachability() == .unreachable)
+    }
+
+    @Test func aTransportFailureIsUnreachable() async {
+        DiscoveryStubURLProtocol.installTransportFailure(.notConnectedToInternet)
+        defer { DiscoveryStubURLProtocol.reset() }
+
+        #expect(await subject.probeReachability() == .unreachable)
+    }
+}
