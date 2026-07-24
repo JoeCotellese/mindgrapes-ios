@@ -466,12 +466,72 @@ group, and all of item 21.
 
 From SPEC section 14:
 
-1. Private-use scheme redirect URIs in DCR. **Blocks item 10.** Decided,
-   PR in flight.
-2. `POST /capture/note`. Blocks text capture reaching the server, though
-   items 3 through 5 can be built and tested against the documented contract
-   before it lands.
-3. `idempotency_key` on both capture doors. Not blocking: Phase 1 ships with
-   the conservative retry set (retry only on network failure and `502`) if
-   this lags, and unlocks aggressive retry when it merges.
-4. QR on `/connect`. Not blocking: manual entry is the documented fallback.
+1. Private-use scheme redirect URIs in DCR. **Blocks item 10.** Written and
+   tested; `mindgrapes-server` PR #45 is open and unmerged.
+2. `POST /capture/note`. **Not written.** Blocks text capture reaching the
+   server, though items 3 through 5 can be built and tested against the
+   documented contract before it lands.
+3. `idempotency_key` on both capture doors. Not written. Not blocking: Phase
+   1 ships with the conservative retry set (retry only on network failure and
+   `502`) if this lags, and unlocks aggressive retry when it merges.
+4. QR on `/connect`. Not written. Not blocking: manual entry is the
+   documented fallback.
+5. **`POST /capture/image` is not on the server's `main`.** The whole
+   attachments feature lives on the unmerged `feature/42-43-attachments-geo`
+   branch, four commits ahead, with no PR open. SPEC section 6.3 documents
+   that endpoint from that branch. Nothing in items 3, 11, 12, or 13 is
+   blocked, since the contract is known and was verified against the branch
+   source, but item 19 (integration) and Phase 1 success condition 3 cannot
+   pass until it merges. This is the largest server dependency.
+
+---
+
+## Added after the first five items
+
+### 22. Continuous integration
+
+`chore` | `loop`
+
+Nothing currently enforces the test suite. Every green result through item
+11 came from running `make test` by hand. A PR with a failing suite would
+merge without complaint.
+
+- GitHub Actions workflow on every PR and on `main`: `make test`, plus the
+  package built for `generic/platform=iOS` and `generic/platform=watchOS`,
+  plus the app built for a simulator.
+- Fix `make build-kit` while here: its two `xcodebuild` lines each `cd`
+  in a separate subshell, so only the first runs from the package
+  directory. Both platforms do build; the target just reports one success
+  where it should report three.
+- Run the suite more than once per job, or add a repeat target. The
+  `ModelContainer` segfault (SPEC 4.3) was a 1-in-10 failure and a
+  single-run job would have shipped it.
+
+Acceptance: a PR with a deliberately failing test cannot be merged. A PR
+that breaks the watchOS build fails the job. Both verified by pushing a
+throwaway branch.
+
+### 23. App-hosted test target for entitlement-gated code
+
+`chore` | `sim`
+
+`SecItem` calls with a Keychain access group return `errSecMissingEntitlement`
+(-34018) under `swift test` on macOS **and** under `xcodebuild test` on an
+iOS simulator, because an SPM test bundle runs in the generic `xctest`
+runner, which carries no `keychain-access-groups` entitlement. Item 7
+confirmed this by running it.
+
+Consequence: the real `SecItemAdd` / `SecItemCopyMatching` / `SecItemUpdate`
+/ `SecItemDelete` round trip is unverified. `SystemKeychainTests` exists,
+compiles for iOS so it cannot silently rot, and runs only when
+`MINDGRAPES_KEYCHAIN_TESTS=1`.
+
+The same gap applies to `AppGroupContainer` from item 2: real App Group
+container resolution needs the entitlement too.
+
+- Add a test target hosted by the signed `MindGrapes` app in `project.yml`.
+- Wire the gated tests to run there.
+
+Acceptance: the Keychain round trip passes against a real Keychain, and a
+regression on `kSecAttrAccessible` fails it rather than only failing the
+dictionary assertion.

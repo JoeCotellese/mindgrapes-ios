@@ -218,6 +218,45 @@ actors; `CaptureRecord` mutation happens only inside `CaptureQueue`.
 and never block on the network beyond a short first-attempt budget
 (section 8.4).
 
+#### A SwiftData model never crosses an actor boundary
+
+`CaptureRecord` is a `@Model` class: a mutable reference type bound to a
+`ModelContext` that is not thread-safe. It is therefore not `Sendable`, and
+Swift 6 refuses to let it leave the actor that owns the store. This is a
+constraint to design around, not one to suppress with
+`@unchecked Sendable`.
+
+The rule: **`CaptureQueue` builds a `Sendable` value snapshot by copying
+fields out of the record, and every downstream consumer takes the snapshot
+instead of the model.** The wire encoders, `BrainClient`, and the
+background-session handoff all sit on the snapshot side of that line.
+
+Why it is worth a second type:
+
+- The encoders become pure functions over values, testable with no SwiftData
+  store at all. That keeps them out of the serialized suite that store tests
+  require (see below) and out of `ModelContainer` setup entirely.
+- The actor stays scoped to storage and state transitions instead of
+  absorbing encoding and request construction, which is what happens when
+  the model is the only currency.
+- Background-session completions arrive outside any actor's isolation
+  (section 8.2). A snapshot is something they can legally carry; a model is
+  not.
+- A model object cannot outlive its context, because nothing downstream ever
+  holds one.
+
+Decide this before writing the consumers. Retrofitting it means rewriting
+every signature and test that named the model type.
+
+#### Store tests must be serialized
+
+Concurrent `ModelContainer` creation segfaults inside CoreData's schema
+setup (`_generateTriggerSQL` mutating a shared dictionary), and Swift
+Testing parallelizes by default. Measured at roughly 1 failure in 10 runs
+before serializing. Any test that opens a SwiftData store belongs in a
+`@Suite(.serialized)`. Pure-value tests need no store and should not create
+one; that is another reason the snapshot boundary pays for itself.
+
 ## 5. Authentication
 
 ### 5.1 The flow
