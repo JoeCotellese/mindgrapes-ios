@@ -78,18 +78,17 @@ immediate first attempt, crash recovery come free), #7 Keychain store
 **Does not need:** #6 background transport, #11–#14 pipeline, #15 formal
 intents (call the pipeline from the view for now), #16 onboarding, full #18.
 
-**Server work required first, both server-side and both Joe's to do:**
-1. Merge server PR #45 (private-use redirect URIs in DCR). Skip the loopback
-   bridge entirely; it is documented throwaway code working around a PR Joe
-   owns and can merge himself.
-2. Write a minimal `POST /capture/note` (SPEC 6.4), a sibling of the existing
-   `capture_image_api` calling `captures.capture(..., client="app")`. **This
-   is the real blocker:** the endpoint does not exist on the server yet, and
-   `/capture/image` is no fallback (it lives on an unmerged branch). Punt the
-   `place_label` open question by accepting-and-ignoring or omitting it; Slice
-   1 sends no location.
+**Server work required, server-side:**
+- ✅ Private-use redirect URIs in DCR: server PR #45 is **merged**. OAuth
+  sign-in (#10) is unblocked; the loopback bridge is not needed.
+- ⏳ **The one remaining blocker: `POST /capture/note`** (SPEC 6.4), tracked as
+  `mindgrapes-server` #53. A sibling of `capture_image_api` calling
+  `captures.capture(..., client="app")`, reusing the existing field parsers.
+  It does not exist yet; `/capture` is extension-only (requires a URL,
+  summarizes) so it is no substitute. `effort/S`. Punt the `place_label` open
+  question by accepting-and-ignoring or omitting it; Slice 1 sends no location.
 
-Once those two land, the client work is unblocked.
+Once #53 lands, the client work is unblocked.
 
 **Must-not-forget wiring.** `CaptureQueue` already parks captures in
 `authRequired` on `invalid_grant` and revives them via `resumeAfterAuth`. Slice
@@ -104,9 +103,8 @@ the first token expiry strands captures with no way to free them.
 **Needs:** a camera/picker button, spool-file write to the App Group, and
 `imageFilename` on the record. Description is typed or a hardcoded template;
 no OCR, no model yet.
-**Server gate:** `POST /capture/image` must merge to the server's `main` (the
-`feature/42-43-attachments-geo` branch). Schedule that merge, do not build
-around it.
+**Server gate:** ✅ `POST /capture/image` is **merged** to the server's `main`
+(PR #52, attachments images v1). No longer a blocker.
 **Maps to:** #11 (done), the remainder of #3/#4, a sliver of #17.
 
 ### Slice 3 — Location
@@ -407,11 +405,9 @@ Slice 1. SPEC section 5.2.
 - Registers `net.cotellese.mindgrapes:/oauth-callback` via DCR.
 - Cancel, error, and re-auth paths.
 
-Server dependency: private-use scheme redirect URIs in DCR. `mindgrapes-server`
-PR #45 is written, tested, and open. **Recommendation: merge PR #45** rather
-than build the documented loopback bridge (`http://127.0.0.1:<port>/callback`).
-The bridge is throwaway code working around a PR Joe owns; only build it if #45
-has an unstated reason it cannot merge.
+Server dependency: private-use scheme redirect URIs in DCR. ✅ `mindgrapes-server`
+PR #45 is **merged**, so this is unblocked and the loopback bridge
+(`http://127.0.0.1:<port>/callback`) is not needed.
 
 Acceptance: against the dev stack, a fresh install completes DCR, PKCE, and
 consent, and `OAuthClient` shows the registration server-side. Cancelling
@@ -668,23 +664,21 @@ dictionary assertion.
 
 ## Server dependencies for Phase 1
 
-From SPEC section 14. Two of these gate Slice 1 and both are Joe's to resolve
-server-side.
+From SPEC section 14. Verified against the live `mindgrapes-server` repo on
+2026-07-24.
 
-1. **`POST /capture/note`. Not written. Blocks Slice 1.** Text capture cannot
-   reach the server until this exists. Items 3–5 were built and tested against
-   the documented contract, so only the endpoint itself is missing: a sibling
-   of `capture_image_api` calling `captures.capture(..., client="app")` per
-   SPEC 6.4. This is the largest Slice 1 blocker and the breakdown previously
-   buried it.
-2. **Private-use scheme redirect URIs in DCR. Gates #10 / Slice 1 sign-in.**
-   Written and tested; `mindgrapes-server` PR #45 is open and unmerged.
-   Recommendation: merge it, skip the loopback bridge.
-3. **`POST /capture/image` is not on the server's `main`. Blocks Slice 2.** The
-   whole attachments feature lives on the unmerged `feature/42-43-attachments-geo`
-   branch, four commits ahead, no PR open. Nothing in items 3, 11, 12, or 13 is
-   blocked (the contract is known), but Slice 2, item 19, and success condition
-   3 cannot pass until it merges.
+1. **`POST /capture/note`. Not written. The one remaining Slice 1 blocker.**
+   Tracked as `mindgrapes-server` #53 (`effort/S`). Text capture cannot reach
+   the server until this exists; items 3–5 were built and tested against the
+   documented contract, so only the endpoint itself is missing. `/capture`
+   exists but is extension-only (requires a URL, summarizes), so it is no
+   substitute.
+2. ✅ **Private-use scheme redirect URIs in DCR. Merged** (`mindgrapes-server`
+   PR #45). #10 / Slice 1 sign-in is unblocked; the loopback bridge is not
+   needed.
+3. ✅ **`POST /capture/image` is merged to server `main`** (PR #52, attachments
+   images v1). Slice 2, item 19, and success condition 3 are no longer gated on
+   it.
 4. `idempotency_key` on both capture doors. Not written. Not blocking: ship the
    conservative retry set (retry only on network failure and `502`) and send the
    key field anyway; it unlocks aggressive retry when honored.
