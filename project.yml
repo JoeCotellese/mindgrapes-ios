@@ -56,6 +56,9 @@ targets:
         # Slice 2 camera capture. The photo picker uses the out-of-process
         # PHPicker and needs no photo-library string.
         NSCameraUsageDescription: MindGrapes uses the camera to capture a photo memory.
+        # Slice 3 location capture (SPEC 9). When-In-Use only; captures attach
+        # where they happened when the location toggle is on.
+        NSLocationWhenInUseUsageDescription: MindGrapes tags a capture with where you made it, when you turn location on.
         # The OAuth callback scheme (SPEC 5.2). Registered here rather than
         # with the auth feature because it is app identity, not behavior:
         # the server's DCR registration must match this string exactly.

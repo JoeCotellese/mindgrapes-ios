@@ -22,6 +22,7 @@ struct CaptureView: View {
     @State private var appGroup: AppGroupContainer?
     @State private var photoItem: PhotosPickerItem?
     @State private var showCamera = false
+    @State private var includeLocation = true
     @State private var busy = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -39,10 +40,10 @@ struct CaptureView: View {
                 .disabled(busy || drainer == nil || NoteDraft(content: text) == nil)
 
             HStack(spacing: 12) {
-                // Any typed text becomes the photo's description; otherwise the
-                // timestamp template fills in (SPEC 7.3 has no OCR/model until Slice 6).
                 // No photoLibrary: argument, so this is the out-of-process picker
-                // that needs no photo-library permission prompt.
+                // that needs no photo-library permission prompt. The photo's
+                // description is the timestamp template (typed captions are the
+                // real capture UI's job, issue 17).
                 PhotosPicker(selection: $photoItem, matching: .images) {
                     Label("Photo", systemImage: "photo.on.rectangle")
                 }
@@ -55,6 +56,11 @@ struct CaptureView: View {
                 }
             }
             .disabled(busy || drainer == nil)
+
+            Toggle("Include location", isOn: $includeLocation)
+                .onChange(of: includeLocation) { _, on in
+                    SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation = on
+                }
 
             Text(status)
                 .font(.footnote)
@@ -116,6 +122,7 @@ struct CaptureView: View {
 
             self.queue = queue
             self.appGroup = appGroup
+            self.includeLocation = SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation ?? true
             self.drainer = CaptureDrainer(queue: queue, client: client) {
                 try await auth.validAccessToken()
             }
@@ -131,10 +138,15 @@ struct CaptureView: View {
     }
 
     private func save() {
-        guard let draft = NoteDraft(content: text), let queue, let drainer else { return }
+        guard NoteDraft(content: text) != nil, let queue, let drainer else { return }
+        let content = text
         busy = true
         Task {
             do {
+                let fix = await locationFix()
+                guard let draft = NoteDraft(
+                    content: content, coordinate: fix?.coordinate, placeLabel: fix?.placeLabel
+                ) else { busy = false; return }
                 let enqueued = try await queue.enqueue(note: draft)
                 text = ""
                 status = "Sending…"
@@ -147,6 +159,23 @@ struct CaptureView: View {
             }
             busy = false
         }
+    }
+
+    /// The location fix to attach, or `nil` when the toggle is off, permission is
+    /// denied, or no fix arrived within the budget. A denied permission flips the
+    /// toggle off with one explanation rather than prompting on every capture
+    /// (SPEC 9). The budget lives in ``LocationProvider``, so a slow fix delays a
+    /// capture by at most that budget and never blocks it outright.
+    private func locationFix() async -> LocationFix? {
+        guard includeLocation else { return nil }
+        let fix = await LocationProvider.system().currentFix()
+        if fix == nil, LocationPermission.status == .denied {
+            // Flipping the toggle fires its onChange, which persists it; no need
+            // to write SharedDefaults again here.
+            includeLocation = false
+            status = "Location is off. Turn it on in Settings to tag captures."
+        }
+        return fix
     }
 
     /// Spools the picked or shot image, enqueues a photo capture, and drains it.
@@ -162,7 +191,11 @@ struct CaptureView: View {
             do {
                 let filename = try PhotoSpooler.spool(data, into: appGroup)
                 let description = PhotoDescription.template(occurredAt: Date())
-                guard let draft = PhotoDraft(imageFilename: filename, description: description) else {
+                let fix = await locationFix()
+                guard let draft = PhotoDraft(
+                    imageFilename: filename, description: description,
+                    coordinate: fix?.coordinate, placeLabel: fix?.placeLabel
+                ) else {
                     status = "Could not prepare that photo."
                     busy = false
                     return
