@@ -33,6 +33,12 @@ targets:
     dependencies:
       - package: MindGrapesKit
         product: MindGrapesKit
+    # Signing.xcconfig supplies DEVELOPMENT_TEAM from an untracked local file for
+    # device and release builds. It is empty by default, so a clone with nothing
+    # set up still generates and builds for the simulator.
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes

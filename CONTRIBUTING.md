@@ -27,6 +27,21 @@ whose `pre-push` hook runs the suite before anything leaves your machine.
 Nothing runs the suite server-side, so this hook is the gate; `git push
 --no-verify` bypasses it when you need to push a known-red WIP branch.
 
+## Building on a device
+
+The simulator needs no Apple account. A device build needs a signing identity,
+which is yours, not the maintainer's. Create `Signing.xcconfig.local` next to
+`Signing.xcconfig` with your Team ID:
+
+```
+DEVELOPMENT_TEAM = ABCDE12345
+```
+
+That file is gitignored. Run `make generate`, then build. On a team other than
+the maintainer's you also need your own `PRODUCT_BUNDLE_IDENTIFIER` (set it in
+the same file) and must register the `group.net.cotellese.mindgrapes` App Group
+under your account.
+
 ## Releasing
 
 Building and running need no Apple account: `make build` targets the
