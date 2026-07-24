@@ -38,4 +38,14 @@ public enum AuthError: Error, Equatable, Sendable {
 
     /// The request never got an answer: no route, timeout, TLS failure.
     case transport(URLError.Code)
+
+    /// The user dismissed the consent sheet. Not a failure to surface loudly:
+    /// the app resets quietly and the flow is retryable. The app adapter maps
+    /// `ASWebAuthenticationSessionError.canceledLogin` to this (item 10).
+    case signInCancelled
+
+    /// The authorization callback carried an OAuth `error` parameter rather than
+    /// a `code` (RFC 6749 §4.1.2.1). The associated value is that error code,
+    /// e.g. `access_denied`.
+    case authorizationFailed(String)
 }

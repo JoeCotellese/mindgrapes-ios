@@ -4,19 +4,25 @@
 import Foundation
 import Security
 
-/// One generic-password item in the shared access group.
+/// One generic-password item, optionally scoped to a shared access group.
 ///
 /// Accessibility and syncing are deliberately *not* initializer parameters.
 /// Both have exactly one correct value here (SPEC 5.3) and a wrong one is
 /// silent: `WhenUnlocked` strands the background queue, and syncing trips
 /// refresh-family revocation. Leaving them out of the API means no caller can
 /// pick the wrong one.
+///
+/// `accessGroup` is optional. A named shared group lets an extension read the
+/// item (SPEC 5.4), but naming one requires the app be provisioned for exactly
+/// that group. `nil` omits the attribute so the item lands in the app's default
+/// group (its application-identifier), which is always entitled and needs no
+/// provisioning: the right choice until an extension actually needs the sharing.
 public struct KeychainItem: Sendable, Hashable {
     public let service: String
     public let account: String
-    public let accessGroup: String
+    public let accessGroup: String?
 
-    public init(service: String, account: String, accessGroup: String) {
+    public init(service: String, account: String, accessGroup: String?) {
         self.service = service
         self.account = account
         self.accessGroup = accessGroup
@@ -25,13 +31,19 @@ public struct KeychainItem: Sendable, Hashable {
     /// Identifies the item without asking for its bytes. Used as the delete
     /// query and as the update predicate.
     var baseQuery: [String: Any] {
-        [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrAccessGroup as String: accessGroup,
             kSecAttrSynchronizable as String: false,
         ]
+        // Omit the attribute entirely when no group is named, rather than
+        // passing a bare group the app may not be entitled to (that is
+        // errSecMissingEntitlement, -34018, on device).
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
     }
 
     /// `baseQuery` plus a request for the stored bytes of a single match.

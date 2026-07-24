@@ -35,6 +35,14 @@ public actor AuthManager {
         self.clientName = clientName
     }
 
+    /// The custom URL scheme the consent sheet must watch for the callback
+    /// (item 10). Derived from `redirectURI` so it cannot drift from the
+    /// `redirect_uri` DCR registered and `authorizationURL` sends. `nonisolated`
+    /// because `redirectURI` is immutable.
+    public nonisolated var callbackScheme: String {
+        URL(string: redirectURI)?.scheme ?? redirectURI
+    }
+
     // MARK: - Discovery
 
     /// Fetches the RFC 8414 metadata for a server (SPEC 5.1 step 2). Static

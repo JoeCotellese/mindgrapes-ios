@@ -96,3 +96,7 @@ final class AuthStubURLProtocol: StubURLProtocolBase {}
 /// A separate channel for `ServerDiscoveryTests`, so its `/healthz` probe cases
 /// do not race the `BrainClient` suite scripting the same endpoint.
 final class DiscoveryStubURLProtocol: StubURLProtocolBase {}
+
+/// A separate channel for `InteractiveSignInTests`, so its DCR + token scripting
+/// does not race `AuthManagerTests` on the same endpoints.
+final class SignInStubURLProtocol: StubURLProtocolBase {}

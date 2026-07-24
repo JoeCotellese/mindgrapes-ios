@@ -33,6 +33,24 @@ private func flag(_ dictionary: [String: Any], _ key: CFString) -> Bool? {
     #expect(attributes[kSecValueData as String] as? Data == Data([0x01]))
 }
 
+@Test func aNamedAccessGroupIsPresentEverywhereTheQueryGoes() {
+    // Every query variant must carry the group, or a write and its later read
+    // would target different keychains.
+    #expect(string(item.addAttributes(data: Data()), kSecAttrAccessGroup) == AppGroup.keychainAccessGroup)
+    #expect(string(item.baseQuery, kSecAttrAccessGroup) == AppGroup.keychainAccessGroup)
+    #expect(string(item.fetchQuery, kSecAttrAccessGroup) == AppGroup.keychainAccessGroup)
+}
+
+@Test func aNilAccessGroupOmitsTheAttributeEntirely() {
+    // Omitted, not empty: the item then lands in the app's default group, which
+    // is always entitled. Passing a bare unentitled group is -34018 on device.
+    let ungrouped = KeychainItem(service: "s", account: "a", accessGroup: nil)
+
+    #expect(ungrouped.baseQuery[kSecAttrAccessGroup as String] == nil)
+    #expect(ungrouped.fetchQuery[kSecAttrAccessGroup as String] == nil)
+    #expect(ungrouped.addAttributes(data: Data())[kSecAttrAccessGroup as String] == nil)
+}
+
 @Test func storedItemsAreReadableAfterFirstUnlock() {
     // SPEC 5.3: background queue drains read this while the device is locked.
     // `WhenUnlocked` would strand the queue, so the flag is asserted rather
