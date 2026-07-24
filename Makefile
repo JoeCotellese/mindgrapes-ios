@@ -25,6 +25,10 @@ build-kit: ## Build the package for the host, iOS, and watchOS
 	cd MindGrapesKit && xcodebuild -scheme MindGrapesKit \
 		-destination 'generic/platform=watchOS' -derivedDataPath .build/xcode build
 
+.PHONY: hooks
+hooks: ## Install the local git hooks (run once per clone)
+	git config core.hooksPath .githooks
+
 .PHONY: generate
 generate: ## Regenerate MindGrapes.xcodeproj from project.yml
 	xcodegen generate
