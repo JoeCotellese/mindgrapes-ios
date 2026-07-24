@@ -51,6 +51,14 @@ release-validate: ## Archive and validate against App Store Connect (no submit; 
 release: ## Archive, export, and upload the app to App Store Connect (needs .env)
 	./scripts/appstore-upload.sh
 
+.PHONY: devices
+devices: ## List connected devices and their identifiers
+	xcrun devicectl list devices
+
+.PHONY: device
+device: ## Build signed and install on a device (DEVICE="Development iPhone")
+	./scripts/install-device.sh
+
 .PHONY: clean
 clean:
 	rm -rf .build MindGrapesKit/.build DerivedData MindGrapes.xcodeproj
