@@ -101,6 +101,6 @@ final class DiscoveryStubURLProtocol: StubURLProtocolBase {}
 /// does not race `AuthManagerTests` on the same endpoints.
 final class SignInStubURLProtocol: StubURLProtocolBase {}
 
-/// A separate channel for `NoteDrainerTests`, so its `/capture/note` scripting
-/// does not race the `BrainClient` suite hitting the same endpoint.
-final class NoteDrainerStubURLProtocol: StubURLProtocolBase {}
+/// A separate channel for `CaptureDrainerTests`, so its `/capture/note` and
+/// `/capture/image` scripting does not race the `BrainClient` suite.
+final class CaptureDrainerStubURLProtocol: StubURLProtocolBase {}

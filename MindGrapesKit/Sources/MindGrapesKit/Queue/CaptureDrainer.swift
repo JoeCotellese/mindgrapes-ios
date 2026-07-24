@@ -1,20 +1,20 @@
-// ABOUTME: A foreground drain pass that sends due note captures and records each outcome.
-// ABOUTME: ponytail: throwaway Slice-1 glue; the background uploader (item 6) replaces it wholesale.
+// ABOUTME: A foreground drain pass that sends due note and photo captures and records each outcome.
+// ABOUTME: ponytail: throwaway Slice-1/2 glue; the background uploader (item 6) replaces it wholesale.
 
 import Foundation
 
-/// One synchronous-ish pass over the outbox: claim what is due, send each note,
-/// tell the queue what happened.
+/// One synchronous-ish pass over the outbox: claim what is due, send each note
+/// and photo, tell the queue what happened.
 ///
-/// This is the minimum that takes a typed note all the way to a real
-/// `experience_id`. It has no timer, no background session, and no concurrency
-/// of its own; the app calls ``drainOnce(now:)`` on save and on foreground.
-/// Item 6 brings the durable background version.
+/// This is the minimum that takes a typed note or a spooled photo all the way to
+/// a real `experience_id`. It has no timer, no background session, and no
+/// concurrency of its own; the app calls ``drainOnce(now:)`` on save and on
+/// foreground. Item 6 brings the durable background version.
 ///
 /// The token comes from an injected closure rather than an `AuthManager`
 /// directly, so the loop stays decoupled from auth and trivially testable: a
 /// test hands it a closure, production hands it `authManager.validAccessToken`.
-public struct NoteDrainer: Sendable {
+public struct CaptureDrainer: Sendable {
     private let queue: CaptureQueue
     private let client: BrainClient
     private let timeZone: TimeZone
@@ -22,7 +22,7 @@ public struct NoteDrainer: Sendable {
 
     /// - Parameters:
     ///   - queue: the outbox actor, the single writer for capture state.
-    ///   - client: the transport for `/capture/note`.
+    ///   - client: the transport for `/capture/note` and `/capture/image`.
     ///   - timeZone: the zone `occurred_at` is expressed in; the device's by
     ///     default, so the offset in the wire string means something to a human.
     ///   - accessToken: yields a valid bearer, refreshing if needed. Throwing
@@ -41,7 +41,7 @@ public struct NoteDrainer: Sendable {
         self.accessToken = accessToken
     }
 
-    /// Sends every note due at `now` and returns the fresh snapshots of the
+    /// Sends every capture due at `now` and returns the fresh snapshots of the
     /// records it touched, so a caller can show the outcome.
     ///
     /// Reclaims anything a prior aborted pass left `inFlight` before claiming, so
@@ -86,22 +86,60 @@ public struct NoteDrainer: Sendable {
         // reclaims them next time.
 
         for snapshot in due {
-            do {
-                let body = try await queue.noteBody(id: snapshot.id, timeZone: timeZone)
-                let response = try await client.postNote(body: body, accessToken: token)
-                try await queue.markSucceeded(id: snapshot.id, experienceID: response.experienceID)
-            } catch let error as BrainClientError {
-                // The queue classifies by disposition: terminal fails the record,
-                // retryable backs it off, a lone 401 holds it due-now for the
-                // refresh-and-retry on the next pass (SPEC 8.3).
-                try await queue.markFailed(id: snapshot.id, error: error, now: now)
+            switch snapshot.kind {
+            case .note: try await sendNote(id: snapshot.id, token: token, now: now)
+            case .photo: try await sendPhoto(id: snapshot.id, token: token, now: now)
             }
-            // A CaptureEncodingError is left to propagate: with a NoteDraft's
-            // guaranteed content it cannot happen for a note, so treating it as a
-            // real bug rather than swallowing it is correct.
         }
 
         return try await snapshots(of: due.map(\.id))
+    }
+
+    private func sendNote(id: UUID, token: String, now: Date) async throws {
+        do {
+            let body = try await queue.noteBody(id: id, timeZone: timeZone)
+            let response = try await client.postNote(body: body, accessToken: token)
+            try await queue.markSucceeded(id: id, experienceID: response.experienceID)
+        } catch let error as BrainClientError {
+            // The queue classifies by disposition: terminal fails the record,
+            // retryable backs it off, a lone 401 holds it due-now for the
+            // refresh-and-retry on the next pass (SPEC 8.3).
+            try await queue.markFailed(id: id, error: error, now: now)
+        }
+        // A CaptureEncodingError is left to propagate: with a NoteDraft's
+        // guaranteed content it cannot happen for a note, so treating it as a
+        // real bug rather than swallowing it is correct.
+    }
+
+    private func sendPhoto(id: UUID, token: String, now: Date) async throws {
+        let body: MultipartFormBody
+        do {
+            body = try await queue.imageMultipartBody(id: id, timeZone: timeZone)
+        } catch {
+            // Unlike a note, a photo body genuinely can fail to encode: a spool
+            // file can vanish (SPEC 8.1 keeps bytes out of the DB, so they are
+            // not recoverable from the record). That is terminal for this record
+            // only, so fail it and let the pass keep draining the rest instead of
+            // aborting and re-attempting the same doomed encode forever.
+            try await queue.markUnsendable(id: id, code: encodingCode(for: error))
+            return
+        }
+        do {
+            let response = try await client.postImage(body: body, accessToken: token)
+            try await queue.markSucceeded(id: id, experienceID: response.experienceID)
+        } catch let error as BrainClientError {
+            try await queue.markFailed(id: id, error: error, now: now)
+        }
+    }
+
+    /// A short, stable code for the recent-captures list; the full error is in
+    /// the log, this is what the row shows.
+    private func encodingCode(for error: any Error) -> String {
+        switch error {
+        case CaptureEncodingError.spoolFileUnreadable: "spool_missing"
+        case CaptureEncodingError.missingImageFilename: "no_image"
+        default: "encode_failed"
+        }
     }
 
     private func snapshots(of ids: [UUID]) async throws -> [CaptureSnapshot] {

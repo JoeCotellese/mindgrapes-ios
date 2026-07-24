@@ -60,7 +60,7 @@ public actor CaptureQueue {
 
     // MARK: - Drain serialization
 
-    /// Held for the length of one ``NoteDrainer`` pass. That pass spans several
+    /// Held for the length of one ``CaptureDrainer`` pass. That pass spans several
     /// `await`s, so the actor serializing each *call* is not enough on its own:
     /// two overlapping passes would each run ``recoverInterrupted(now:)`` and
     /// reset the other's legitimately `inFlight` records back to `pending`, then
@@ -143,6 +143,21 @@ public actor CaptureQueue {
             record.nextAttemptAt = now.addingTimeInterval(backoffDelay(attempt: record.attemptCount))
             record.state = .pending
         }
+        try context.save()
+    }
+
+    /// Fails a record that can never be sent as-is: its body could not be
+    /// encoded (a photo whose spool file vanished, say). Terminal, kept visible
+    /// with its error like any other ``markFailed`` terminal outcome.
+    ///
+    /// Separate from ``markFailed(id:error:now:)`` because this is a client-side
+    /// encoding failure, not a server ``BrainClientError``; the guard against
+    /// resurrecting a settled record is the same. No-op if the id is unknown.
+    public func markUnsendable(id: UUID, code: String) throws {
+        guard let record = try record(id: id) else { return }
+        guard record.state == .inFlight || record.state == .pending else { return }
+        record.state = .failed
+        record.lastErrorCode = code
         try context.save()
     }
 
@@ -234,6 +249,31 @@ public actor CaptureQueue {
             throw CaptureEncodingError.recordNotFound(id)
         }
         return try CaptureWireEncoder.noteBody(for: record, timeZone: timeZone)
+    }
+
+    /// Encodes the `/capture/image` multipart body for one record, reading the
+    /// spooled derivative the record names.
+    ///
+    /// The record and the spool bytes both stay on this side of the actor
+    /// boundary, mirroring ``noteBody(id:timeZone:)``. A missing record throws
+    /// ``CaptureEncodingError/recordNotFound(_:)``; a record naming a spool file
+    /// that is gone throws ``CaptureEncodingError/spoolFileUnreadable(_:)``. Both
+    /// are terminal (the bytes cannot be rebuilt), so the drain fails the record
+    /// rather than retrying.
+    public func imageMultipartBody(id: UUID, timeZone: TimeZone = .current, boundary: String? = nil) throws -> MultipartFormBody {
+        guard let record = try record(id: id) else {
+            throw CaptureEncodingError.recordNotFound(id)
+        }
+        guard let filename = record.imageFilename?.nonBlank else {
+            throw CaptureEncodingError.missingImageFilename
+        }
+        let url = appGroup.photoSpoolFileURL(named: filename)
+        guard let imageData = try? Data(contentsOf: url) else {
+            throw CaptureEncodingError.spoolFileUnreadable(filename)
+        }
+        return try CaptureWireEncoder.imageMultipartBody(
+            for: record, imageData: imageData, timeZone: timeZone, boundary: boundary
+        )
     }
 
     // MARK: - Reading

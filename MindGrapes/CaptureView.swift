@@ -1,8 +1,9 @@
-// ABOUTME: A one-field note capture screen wired end to end: type, Save, watch it reach a real experience_id.
-// ABOUTME: ponytail: throwaway Slice-1 HITL screen; the real capture UI (issue 17) replaces it.
+// ABOUTME: A rough capture screen wired end to end: type a note or pick/shoot a photo, watch it reach a real experience_id.
+// ABOUTME: ponytail: throwaway Slice-1/2 HITL screen; the real capture UI (issue 17) replaces it.
 
 import MindGrapesKit
 import OSLog
+import PhotosUI
 import SwiftData
 import SwiftUI
 
@@ -17,7 +18,10 @@ struct CaptureView: View {
     @State private var text = ""
     @State private var status = "Preparing…"
     @State private var queue: CaptureQueue?
-    @State private var drainer: NoteDrainer?
+    @State private var drainer: CaptureDrainer?
+    @State private var appGroup: AppGroupContainer?
+    @State private var photoItem: PhotosPickerItem?
+    @State private var showCamera = false
     @State private var busy = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -34,6 +38,24 @@ struct CaptureView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(busy || drainer == nil || NoteDraft(content: text) == nil)
 
+            HStack(spacing: 12) {
+                // Any typed text becomes the photo's description; otherwise the
+                // timestamp template fills in (SPEC 7.3 has no OCR/model until Slice 6).
+                // No photoLibrary: argument, so this is the out-of-process picker
+                // that needs no photo-library permission prompt.
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    Label("Photo", systemImage: "photo.on.rectangle")
+                }
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    Button {
+                        showCamera = true
+                    } label: {
+                        Label("Camera", systemImage: "camera")
+                    }
+                }
+            }
+            .disabled(busy || drainer == nil)
+
             Text(status)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -46,6 +68,21 @@ struct CaptureView: View {
         .onChange(of: scenePhase) { _, phase in
             // Foregrounding drains anything that backed off while away.
             if phase == .active, drainer != nil { Task { await drain() } }
+        }
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    savePhoto(data)
+                } else {
+                    status = "Could not read that photo."
+                }
+                photoItem = nil
+            }
+        }
+        .sheet(isPresented: $showCamera) {
+            CameraPicker { data in savePhoto(data) }
+                .ignoresSafeArea()
         }
     }
 
@@ -68,10 +105,11 @@ struct CaptureView: View {
             let client = BrainClient(config: ServerConfig(baseURL: baseURL), session: .shared)
 
             self.queue = queue
-            self.drainer = NoteDrainer(queue: queue, client: client) {
+            self.appGroup = appGroup
+            self.drainer = CaptureDrainer(queue: queue, client: client) {
                 try await auth.validAccessToken()
             }
-            status = "Ready. Type a note and tap Save."
+            status = "Ready. Type a note, or add a photo."
             // Flush anything a prior session left queued: drainOnce reclaims
             // interrupted records, and .onChange does not fire for the initial
             // .active, so this is the launch drain.
@@ -96,6 +134,35 @@ struct CaptureView: View {
             } catch {
                 log.error("save failed: \(String(describing: error), privacy: .public)")
                 status = "Could not save: \(error)"
+            }
+            busy = false
+        }
+    }
+
+    /// Spools the picked or shot image, enqueues a photo capture, and drains it.
+    /// Any typed text is reused as the description; otherwise the template fills in.
+    private func savePhoto(_ data: Data) {
+        guard let queue, let drainer, let appGroup else { return }
+        busy = true
+        Task {
+            do {
+                let filename = try PhotoSpooler.spool(data, into: appGroup)
+                let description = NoteDraft(content: text)?.content
+                    ?? PhotoDescription.template(occurredAt: Date())
+                guard let draft = PhotoDraft(imageFilename: filename, description: description) else {
+                    status = "Could not prepare that photo."
+                    busy = false
+                    return
+                }
+                let enqueued = try await queue.enqueue(photo: draft)
+                text = ""
+                status = "Sending photo…"
+                try await drainer.drainOnce()
+                let final = try await queue.snapshot(id: enqueued.id)
+                status = final.map(describe) ?? "Saved."
+            } catch {
+                log.error("save photo failed: \(String(describing: error), privacy: .public)")
+                status = "Could not save photo: \(error)"
             }
             busy = false
         }
