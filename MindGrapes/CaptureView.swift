@@ -170,8 +170,9 @@ struct CaptureView: View {
         guard includeLocation else { return nil }
         let fix = await LocationProvider.system().currentFix()
         if fix == nil, LocationPermission.status == .denied {
+            // Flipping the toggle fires its onChange, which persists it; no need
+            // to write SharedDefaults again here.
             includeLocation = false
-            SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation = false
             status = "Location is off. Turn it on in Settings to tag captures."
         }
         return fix
