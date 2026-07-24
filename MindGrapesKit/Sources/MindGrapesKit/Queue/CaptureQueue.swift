@@ -58,6 +58,29 @@ public actor CaptureQueue {
         return CaptureSnapshot(record)
     }
 
+    // MARK: - Drain serialization
+
+    /// Held for the length of one ``NoteDrainer`` pass. That pass spans several
+    /// `await`s, so the actor serializing each *call* is not enough on its own:
+    /// two overlapping passes would each run ``recoverInterrupted(now:)`` and
+    /// reset the other's legitimately `inFlight` records back to `pending`, then
+    /// re-claim and re-send them. The server dedupes on `idempotency_key`, but
+    /// the retry accounting (`attemptCount`, backoff) would still drift. One
+    /// drain at a time removes the overlap instead of tolerating it.
+    private var isDraining = false
+
+    /// Claims the single drain slot for a pass, or returns `false` when one is
+    /// already running so the caller can no-op. Pair every `true` with
+    /// ``endDrain()``.
+    func beginDrain() -> Bool {
+        if isDraining { return false }
+        isDraining = true
+        return true
+    }
+
+    /// Releases the drain slot. Safe to call after a failed pass.
+    func endDrain() { isDraining = false }
+
     // MARK: - Draining
 
     /// Claims every record that is due to send: `pending` with `nextAttemptAt`
@@ -192,6 +215,25 @@ public actor CaptureQueue {
             context.delete(record)
         }
         try context.save()
+    }
+
+    // MARK: - Wire body
+
+    /// Encodes the `/capture/note` body for one record without the record ever
+    /// leaving the actor.
+    ///
+    /// The drain loop (item 6) needs the wire bytes, but ``CaptureWireEncoder``
+    /// takes the non-`Sendable` `CaptureRecord`, which is confined here.
+    /// ``CaptureSnapshot`` deliberately carries no payload, so the encode has to
+    /// happen on this side of the isolation boundary. Throws
+    /// ``CaptureEncodingError/recordNotFound`` if the id is unknown (a caller
+    /// racing a prune), and whatever ``CaptureWireEncoder/noteBody(for:timeZone:)``
+    /// throws for a non-note or empty-content record.
+    public func noteBody(id: UUID, timeZone: TimeZone = .current) throws -> Data {
+        guard let record = try record(id: id) else {
+            throw CaptureEncodingError.recordNotFound(id)
+        }
+        return try CaptureWireEncoder.noteBody(for: record, timeZone: timeZone)
     }
 
     // MARK: - Reading

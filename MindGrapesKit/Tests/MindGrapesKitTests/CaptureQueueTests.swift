@@ -331,6 +331,21 @@ struct CaptureQueueTests {
         #expect(claimed.map(\.id) == [snapshot.id])
     }
 
+    // MARK: - Drain serialization
+
+    @Test func beginDrainIsExclusiveUntilEnded() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+
+        // First claim takes the slot; a second is refused while it is held.
+        #expect(await queue.beginDrain() == true)
+        #expect(await queue.beginDrain() == false)
+
+        // Releasing lets the next pass claim it.
+        await queue.endDrain()
+        #expect(await queue.beginDrain() == true)
+    }
+
     // MARK: - Pruning (SPEC 8.1)
 
     @Test func pruneRemovesSucceededRecordsPastRetentionAndKeepsTheRest() async throws {

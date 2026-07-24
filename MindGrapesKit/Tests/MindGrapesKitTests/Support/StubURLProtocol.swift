@@ -100,3 +100,7 @@ final class DiscoveryStubURLProtocol: StubURLProtocolBase {}
 /// A separate channel for `InteractiveSignInTests`, so its DCR + token scripting
 /// does not race `AuthManagerTests` on the same endpoints.
 final class SignInStubURLProtocol: StubURLProtocolBase {}
+
+/// A separate channel for `NoteDrainerTests`, so its `/capture/note` scripting
+/// does not race the `BrainClient` suite hitting the same endpoint.
+final class NoteDrainerStubURLProtocol: StubURLProtocolBase {}

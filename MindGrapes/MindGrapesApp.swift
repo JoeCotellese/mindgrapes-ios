@@ -1,5 +1,5 @@
 // ABOUTME: App entry point for the MindGrapes iOS capture app.
-// ABOUTME: Shows the throwaway sign-in screen (item 10) until the real capture screen lands (issue 17).
+// ABOUTME: Shows the throwaway sign-in screen, which pushes the capture screen once signed in (issue 17 replaces both).
 
 import SwiftUI
 
@@ -7,7 +7,9 @@ import SwiftUI
 struct MindGrapesApp: App {
     var body: some Scene {
         WindowGroup {
-            SignInView()
+            NavigationStack {
+                SignInView()
+            }
         }
     }
 }

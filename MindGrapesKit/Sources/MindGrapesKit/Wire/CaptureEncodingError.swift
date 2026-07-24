@@ -25,4 +25,8 @@ public enum CaptureEncodingError: Error, Equatable, Sendable {
     /// The caller's boundary occurs inside the payload, where it would split a
     /// part in half. Generated boundaries retry instead of failing.
     case boundaryCollision(String)
+
+    /// The id handed to ``CaptureQueue/noteBody(id:timeZone:)`` names no record:
+    /// a drain racing a prune, or a stale id. The caller skips it.
+    case recordNotFound(UUID)
 }
