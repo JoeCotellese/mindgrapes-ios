@@ -36,7 +36,14 @@ final class WebAuthenticationSession: NSObject, OAuthWebAuthenticating {
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = false
             self.session = session
-            session.start()
+            // start() returns false when it cannot present (another session in
+            // flight, no context) and then never calls the completion handler.
+            // Resume here or the continuation leaks and run() hangs forever.
+            // Treated as a quiet, retryable non-event, like a dismissal.
+            guard session.start() else {
+                continuation.resume(throwing: AuthError.signInCancelled)
+                return
+            }
         }
     }
 }

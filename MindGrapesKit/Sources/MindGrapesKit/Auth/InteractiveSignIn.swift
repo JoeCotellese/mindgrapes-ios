@@ -59,6 +59,11 @@ public struct InteractiveSignIn: Sendable {
             items.first { $0.name == name }?.value
         }
         if let error = value("error") {
+            // An error callback is reported without a `state` check. RFC 6749
+            // §10.12 suggests validating it here too, but no `code` is exchanged
+            // on this branch and nothing persists, so a forged error only
+            // produces a misleading status string. State validation stays
+            // centralized in `exchange` rather than duplicated here.
             throw AuthError.authorizationFailed(error)
         }
         guard let code = value("code"), let state = value("state") else {

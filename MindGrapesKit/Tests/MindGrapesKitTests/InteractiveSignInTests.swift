@@ -41,6 +41,14 @@ struct InteractiveSignInCallbackTests {
         }
         #expect(error == .malformedResponse)
     }
+
+    @Test func anErrorTakesPrecedenceOverACode() {
+        // A callback carrying both is a failed authorization, not a usable code.
+        let error = #expect(throws: AuthError.self) {
+            try InteractiveSignIn.parseCallback(callback("error=access_denied&code=abc&state=xyz"))
+        }
+        #expect(error == .authorizationFailed("access_denied"))
+    }
 }
 
 // MARK: - Orchestration (scripted)
@@ -150,6 +158,28 @@ struct InteractiveSignInOrchestrationTests {
 
         let error = await #expect(throws: AuthError.self) { try await signIn.run(asOf: now) }
         #expect(error == .authorizationFailed("access_denied"))
+        #expect(try store.tokens() == nil)
+    }
+
+    @Test func aValidCallbackWhoseExchangeFailsStoresNoTokens() async throws {
+        // The path only this coordinator owns: the callback parsed and the state
+        // matched, but the token endpoint rejected the exchange. Nothing persists.
+        defer { SignInStubURLProtocol.reset() }
+        SignInStubURLProtocol.install { request in
+            let path = request.url?.path ?? ""
+            let isToken = path.hasSuffix("/oauth/token")
+            let status = isToken ? 400 : 200
+            let body = isToken ? #"{"error":"invalid_request"}"# : #"{"client_id":"client-abc"}"#
+            let http = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
+            return .success((http, Data(body.utf8)))
+        }
+        let web = FakeWebAuth { authURL in
+            callbackURL(query: "code=auth-code&state=\(state(from: authURL))")
+        }
+        let (signIn, store) = make(web: web)
+
+        let error = await #expect(throws: AuthError.self) { try await signIn.run(asOf: now) }
+        #expect(error == .tokenRequestFailed(status: 400))
         #expect(try store.tokens() == nil)
     }
 
