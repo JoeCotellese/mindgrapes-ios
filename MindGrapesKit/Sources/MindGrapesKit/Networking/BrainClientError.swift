@@ -53,6 +53,23 @@ public enum BrainClientError: Error, Equatable, Sendable {
     /// The status said success but the body was not what the endpoint promises.
     case malformedResponse
 
+    /// A short, stable string for ``CaptureRecord/lastErrorCode``, so item 18 can
+    /// show why a capture stalled without the queue storing a status code it
+    /// promised never to switch on.
+    public var code: String {
+        switch self {
+        case .badRequest: "400"
+        case .unauthorized: "401"
+        case .methodNotAllowed: "405"
+        case .payloadTooLarge: "413"
+        case .unsupportedMediaType: "415"
+        case .badGateway: "502"
+        case let .unexpectedStatus(status): String(status)
+        case let .transport(code): "transport(\(code.rawValue))"
+        case .malformedResponse: "malformed_response"
+        }
+    }
+
     public var retryDisposition: RetryDisposition {
         switch self {
         case .unauthorized:
