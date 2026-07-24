@@ -1,0 +1,233 @@
+// ABOUTME: The actor that owns every CaptureRecord mutation and the retry state machine.
+// ABOUTME: SPEC 8: durable-before-send, backoff with jitter, crash recovery, auth parking.
+
+import Foundation
+import SwiftData
+
+/// The single writer for the capture outbox (SPEC 8.1, 8.3, 8.5).
+///
+/// All `CaptureRecord` mutation happens here so the not-`Sendable` model never
+/// leaves one isolation domain. Callers enqueue `Sendable` drafts and read
+/// ``CaptureSnapshot`` values; the transport (item 6) reports outcomes back
+/// through ``markSucceeded(id:experienceID:)`` and
+/// ``markFailed(id:error:now:)``.
+public actor CaptureQueue {
+    private let context: ModelContext
+    private let appGroup: AppGroupContainer
+    private var rng: any RandomNumberGenerator
+
+    /// Succeeded records live this long so they can back the recent-captures
+    /// list (SPEC 8.1) before ``prune(now:)`` removes them.
+    private let retention: TimeInterval = 7 * 24 * 60 * 60
+
+    /// - Parameters:
+    ///   - container: the SwiftData store, opened once per process.
+    ///   - appGroup: locates the photo spool so succeeded and pruned records can
+    ///     delete their derivative.
+    ///   - rng: the jitter source. Injected so backoff bounds are testable with a
+    ///     seeded generator; production uses the system source.
+    public init(
+        container: ModelContainer,
+        appGroup: AppGroupContainer,
+        rng: sending any RandomNumberGenerator = SystemRandomNumberGenerator()
+    ) {
+        self.context = ModelContext(container)
+        self.appGroup = appGroup
+        self.rng = rng
+    }
+
+    // MARK: - Enqueue
+
+    /// Persists a note capture as `pending` and due immediately (SPEC 8.4). The
+    /// record is durable before this returns, so a crash before the first upload
+    /// loses nothing.
+    @discardableResult
+    public func enqueue(note: NoteDraft, now: Date = Date()) throws -> CaptureSnapshot {
+        try insert(CaptureRecord(note: note, createdAt: now))
+    }
+
+    /// Persists a photo capture as `pending` and due immediately (SPEC 8.4).
+    @discardableResult
+    public func enqueue(photo: PhotoDraft, now: Date = Date()) throws -> CaptureSnapshot {
+        try insert(CaptureRecord(photo: photo, createdAt: now))
+    }
+
+    private func insert(_ record: CaptureRecord) throws -> CaptureSnapshot {
+        context.insert(record)
+        try context.save()
+        return CaptureSnapshot(record)
+    }
+
+    // MARK: - Draining
+
+    /// Claims every record that is due to send: `pending` with `nextAttemptAt`
+    /// at or before `now`, oldest first. Each is marked `inFlight` and saved, so
+    /// a crash mid-send leaves a record ``recoverInterrupted()`` can reclaim.
+    public func claimDue(now: Date = Date()) throws -> [CaptureSnapshot] {
+        let pendingRaw = CaptureState.pending.rawValue
+        let descriptor = FetchDescriptor<CaptureRecord>(
+            predicate: #Predicate { $0.stateRaw == pendingRaw && $0.nextAttemptAt <= now },
+            sortBy: [SortDescriptor(\.createdAt)]
+        )
+        let due = try context.fetch(descriptor)
+        for record in due { record.state = .inFlight }
+        try context.save()
+        return due.map(CaptureSnapshot.init)
+    }
+
+    // MARK: - Outcomes
+
+    /// Marks a record delivered: keep the `experience_id`, drop the spool file,
+    /// clear the last error (SPEC 8.1). No-op if the id is unknown, so a
+    /// duplicate completion for an already-reconciled record is safe (SPEC 8.2).
+    public func markSucceeded(id: UUID, experienceID: String) throws {
+        guard let record = try record(id: id) else { return }
+        record.state = .succeeded
+        record.experienceID = experienceID
+        record.lastErrorCode = nil
+        deleteSpoolFile(for: record)
+        try context.save()
+    }
+
+    /// Applies the retry policy for a failed attempt (SPEC 8.3), classifying by
+    /// the error's disposition rather than its status:
+    /// - `terminal`: `failed`, kept visible with its error.
+    /// - `retry`: `pending`, `attemptCount` bumped, `nextAttemptAt` pushed out by
+    ///   the jittered backoff.
+    /// - `authRequired`: a lone `401`. Held `pending` and due now for the
+    ///   refresh-and-retry cycle (section 5.4); it does not park or back off. A
+    ///   failed refresh is what calls ``parkForAuth()``.
+    ///
+    /// No-op if the id is unknown.
+    public func markFailed(id: UUID, error: BrainClientError, now: Date = Date()) throws {
+        guard let record = try record(id: id) else { return }
+        // A delivered capture is not un-delivered, a terminal failure not
+        // resurrected, and a parked record not un-parked, by a late or duplicate
+        // completion. SPEC 8.2 runs foreground and background uploads for the same
+        // record, so a success and a failure can both arrive, in either order; only
+        // a record still in play (inFlight, or pending awaiting its next attempt)
+        // may be failed.
+        guard record.state == .inFlight || record.state == .pending else { return }
+        record.lastErrorCode = error.code
+        switch error.retryDisposition {
+        case .terminal:
+            record.state = .failed
+        case .authRequired:
+            record.state = .pending
+            record.nextAttemptAt = now
+        case .retry:
+            record.attemptCount += 1
+            record.nextAttemptAt = now.addingTimeInterval(backoffDelay(attempt: record.attemptCount))
+            record.state = .pending
+        }
+        try context.save()
+    }
+
+    // MARK: - Auth expiry (SPEC 8.5)
+
+    /// Parks every record that could still send (`pending` or `inFlight`) in
+    /// `authRequired` when a refresh returns `invalid_grant`. Parked records are
+    /// not retried and not dropped; ``resumeAfterAuth(now:)`` revives them.
+    public func parkForAuth() throws {
+        let pendingRaw = CaptureState.pending.rawValue
+        let inFlightRaw = CaptureState.inFlight.rawValue
+        let descriptor = FetchDescriptor<CaptureRecord>(
+            predicate: #Predicate { $0.stateRaw == pendingRaw || $0.stateRaw == inFlightRaw }
+        )
+        for record in try context.fetch(descriptor) {
+            record.state = .authRequired
+            record.lastErrorCode = "invalid_grant"
+        }
+        try context.save()
+    }
+
+    /// Revives parked records after a successful re-auth: back to `pending`, due
+    /// now, error cleared so it no longer reads as blocked.
+    public func resumeAfterAuth(now: Date = Date()) throws {
+        let authRaw = CaptureState.authRequired.rawValue
+        let descriptor = FetchDescriptor<CaptureRecord>(
+            predicate: #Predicate { $0.stateRaw == authRaw }
+        )
+        for record in try context.fetch(descriptor) {
+            record.state = .pending
+            record.nextAttemptAt = now
+            record.lastErrorCode = nil
+        }
+        try context.save()
+    }
+
+    // MARK: - Lifecycle
+
+    /// Reclaims records left `inFlight` by a process that died mid-send: back to
+    /// `pending`, due now (SPEC 8.1 crash recovery). Run once at launch before
+    /// the first drain.
+    public func recoverInterrupted(now: Date = Date()) throws {
+        let inFlightRaw = CaptureState.inFlight.rawValue
+        let descriptor = FetchDescriptor<CaptureRecord>(
+            predicate: #Predicate { $0.stateRaw == inFlightRaw }
+        )
+        for record in try context.fetch(descriptor) {
+            record.state = .pending
+            record.nextAttemptAt = now
+        }
+        try context.save()
+    }
+
+    /// Deletes succeeded records older than the 7-day retention window (SPEC
+    /// 8.1). Their spool files are already gone from ``markSucceeded``; this also
+    /// clears any that lingered.
+    ///
+    /// ponytail: ages by `createdAt` because the model has no `succeededAt`.
+    /// Captures succeed within seconds of creation, so the two are the same day;
+    /// add a `succeededAt` field if a capture ever sits failed for a week and
+    /// then succeeds.
+    public func prune(now: Date = Date()) throws {
+        let cutoff = now.addingTimeInterval(-retention)
+        let succeededRaw = CaptureState.succeeded.rawValue
+        let descriptor = FetchDescriptor<CaptureRecord>(
+            predicate: #Predicate { $0.stateRaw == succeededRaw && $0.createdAt < cutoff }
+        )
+        for record in try context.fetch(descriptor) {
+            deleteSpoolFile(for: record)
+            context.delete(record)
+        }
+        try context.save()
+    }
+
+    // MARK: - Reading
+
+    /// A snapshot of one record, or `nil` if it is gone.
+    public func snapshot(id: UUID) throws -> CaptureSnapshot? {
+        try record(id: id).map(CaptureSnapshot.init)
+    }
+
+    /// Every record, newest first. Backs the recent-captures list (item 18).
+    public func allSnapshots() throws -> [CaptureSnapshot] {
+        let descriptor = FetchDescriptor<CaptureRecord>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+        )
+        return try context.fetch(descriptor).map(CaptureSnapshot.init)
+    }
+
+    // MARK: - Plumbing
+
+    private func record(id: UUID) throws -> CaptureRecord? {
+        try context.fetch(
+            FetchDescriptor<CaptureRecord>(predicate: #Predicate { $0.id == id })
+        ).first
+    }
+
+    /// Full jitter, capped at one hour (SPEC 8.3):
+    /// `delay = random(0, min(30 * 2^attempt, 3600))`.
+    private func backoffDelay(attempt: Int) -> TimeInterval {
+        let cap = min(30 * pow(2, Double(attempt)), 3600)
+        return Double.random(in: 0...cap, using: &rng)
+    }
+
+    /// Best effort: a missing or undeletable spool file must never fail a
+    /// success or a prune. The spool derivative is rebuildable; the record is not.
+    private func deleteSpoolFile(for record: CaptureRecord) {
+        guard let filename = record.imageFilename else { return }
+        try? FileManager.default.removeItem(at: appGroup.photoSpoolFileURL(named: filename))
+    }
+}
