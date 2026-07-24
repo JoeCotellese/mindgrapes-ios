@@ -16,11 +16,11 @@ enum TokenKeychainItems {
     /// Account names are the on-device contract across app updates. Renaming
     /// one strands the stored credential: the read finds nothing, and the user
     /// is asked to sign in again with no visible cause.
-    static func clientRegistration(accessGroup: String) -> KeychainItem {
+    static func clientRegistration(accessGroup: String?) -> KeychainItem {
         KeychainItem(service: service, account: "client_registration", accessGroup: accessGroup)
     }
 
-    static func tokens(accessGroup: String) -> KeychainItem {
+    static func tokens(accessGroup: String?) -> KeychainItem {
         KeychainItem(service: service, account: "oauth_tokens", accessGroup: accessGroup)
     }
 }
@@ -77,11 +77,11 @@ public protocol TokenWriting: Sendable {
 /// refreshes and resubmits.
 public struct TokenReader: TokenReading {
     let keychain: any KeychainItemStoring
-    let accessGroup: String
+    let accessGroup: String?
 
     public init(
         keychain: some KeychainItemStoring = SystemKeychain(),
-        accessGroup: String = AppGroup.keychainAccessGroup
+        accessGroup: String? = AppGroup.keychainAccessGroup
     ) {
         self.keychain = keychain
         self.accessGroup = accessGroup
@@ -129,7 +129,7 @@ public struct TokenStore: TokenReading, TokenWriting {
 
     public init(
         keychain: some KeychainItemStoring = SystemKeychain(),
-        accessGroup: String = AppGroup.keychainAccessGroup
+        accessGroup: String? = AppGroup.keychainAccessGroup
     ) {
         reader = TokenReader(keychain: keychain, accessGroup: accessGroup)
     }
