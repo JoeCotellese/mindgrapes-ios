@@ -86,6 +86,17 @@ struct ServerDiscoveryProbeTests {
         #expect(await subject.probeReachability() == .wrongHost)
     }
 
+    @Test func aHealthzDemandingAuthIsTheWrongHost() async {
+        // /healthz is unauthenticated by contract (SPEC 6.1). A host that
+        // answers 401 here is not Mind Grapes, so the URL is the suspect. This
+        // pins the authRequired disposition, the one the ternary folds into
+        // wrongHost without saying so.
+        DiscoveryStubURLProtocol.install(status: 401)
+        defer { DiscoveryStubURLProtocol.reset() }
+
+        #expect(await subject.probeReachability() == .wrongHost)
+    }
+
     @Test(
         "a server-side hiccup reads as unreachable, not wrong host",
         arguments: [502, 503]

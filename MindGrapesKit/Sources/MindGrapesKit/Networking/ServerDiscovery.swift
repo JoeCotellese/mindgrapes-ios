@@ -68,6 +68,12 @@ extension BrainClient {
     /// `checkHealth()` already does the real work (no bearer, body must read
     /// `ok`); this only classifies its outcome without throwing, so a Check
     /// button can render a result directly.
+    ///
+    /// One known limitation: a transient `4xx` such as `429` or `408` reads as
+    /// `wrongHost` rather than `unreachable`, because the classification keys off
+    /// `5xx`-vs-not (`BrainClientError.retryDisposition`). Neither is expected on
+    /// an unauthenticated `/healthz`, so the thin slice does not special-case
+    /// them; revisit there if a real deployment rate-limits the probe.
     public func probeReachability() async -> ServerDiscovery.Reachability {
         do {
             try await checkHealth()
