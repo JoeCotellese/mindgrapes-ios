@@ -1,0 +1,67 @@
+# ABOUTME: XcodeGen spec for the MindGrapes app target.
+# ABOUTME: The .xcodeproj is generated and gitignored; this file is the source of truth.
+
+name: MindGrapes
+
+options:
+  bundleIdPrefix: net.cotellese
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # No development team is checked in. Simulator builds do not need one;
+    # add DEVELOPMENT_TEAM locally (or via xcconfig) for device builds.
+    CODE_SIGN_STYLE: Automatic
+
+packages:
+  MindGrapesKit:
+    path: MindGrapesKit
+
+targets:
+  MindGrapes:
+    type: application
+    platform: iOS
+    sources:
+      - path: MindGrapes
+    dependencies:
+      - package: MindGrapesKit
+        product: MindGrapesKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes
+        CODE_SIGN_ENTITLEMENTS: MindGrapes/MindGrapes.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "0.1.0"
+    info:
+      path: MindGrapes/Info.plist
+      properties:
+        CFBundleDisplayName: MindGrapes
+        UILaunchScreen: {}
+        # The OAuth callback scheme (SPEC 5.2). Registered here rather than
+        # with the auth feature because it is app identity, not behavior:
+        # the server's DCR registration must match this string exactly.
+        CFBundleURLTypes:
+          - CFBundleURLName: net.cotellese.mindgrapes.oauth
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - net.cotellese.mindgrapes
+
+schemes:
+  MindGrapes:
+    build:
+      targets:
+        MindGrapes: all
+    run:
+      config: Debug
+    test:
+      config: Debug

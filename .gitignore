@@ -1,0 +1,31 @@
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+!*.xcworkspace/contents.xcworkspacedata
+xcuserdata/
+DerivedData/
+build/
+*.xcuserstate
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# The project and its Info.plist are generated from project.yml by XcodeGen
+# (`make generate`). Checking in the pbxproj would make it the source of truth
+# and reintroduce merge conflicts; regenerate instead.
+MindGrapes/Info.plist
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+
+# Secrets and local config
+*.xcconfig.local
+.env
