@@ -113,7 +113,13 @@ struct AuthManagerTests {
         try store.setClientID("client-123")
         AuthStubURLProtocol.install(status: 200, text: #"{"access_token":"at-1","refresh_token":"rt-1","expires_in":600}"#)
 
-        try await manager.exchange(code: "auth-code", pkce: PKCE(verifier: "verifier"), asOf: now)
+        try await manager.exchange(
+            code: "auth-code",
+            state: "s-1",
+            expectedState: "s-1",
+            pkce: PKCE(verifier: "verifier"),
+            asOf: now
+        )
 
         let tokens = try #require(try store.tokens())
         #expect(tokens.accessToken == "at-1")
@@ -121,11 +127,41 @@ struct AuthManagerTests {
         #expect(tokens.accessTokenExpiresAt == now.addingTimeInterval(600))
     }
 
+    @Test func exchangeRejectsAStateMismatchBeforeTheTokenEndpoint() async throws {
+        defer { AuthStubURLProtocol.reset() }
+        let (manager, store) = makeManager()
+        try store.setClientID("client-123")
+        // A failing transport proves the token endpoint is never reached: the
+        // state check rejects first.
+        AuthStubURLProtocol.installTransportFailure(.notConnectedToInternet)
+
+        await #expect(throws: AuthError.stateMismatch) {
+            try await manager.exchange(
+                code: "auth-code",
+                state: "returned",
+                expectedState: "sent",
+                pkce: PKCE(verifier: "v"),
+                asOf: now
+            )
+        }
+        #expect(try store.tokens() == nil)
+    }
+
     @Test func exchangeRequiresRegistration() async throws {
         let (manager, _) = makeManager()
         await #expect(throws: AuthError.notRegistered) {
-            try await manager.exchange(code: "c", pkce: PKCE(verifier: "v"), asOf: now)
+            try await manager.exchange(code: "c", state: "s", expectedState: "s", pkce: PKCE(verifier: "v"), asOf: now)
         }
+    }
+
+    @Test func makeStateIsUrlSafeAndDistinct() {
+        let urlSafe = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        var generator = SeededRandomNumberGenerator(seed: 42)
+        let first = AuthManager.makeState(using: &generator)
+        let second = AuthManager.makeState(using: &generator)
+        #expect(first != second)
+        #expect(first.allSatisfy { urlSafe.contains($0) })
+        #expect(first.count >= 32)
     }
 
     // MARK: - validAccessToken and refresh
@@ -187,6 +223,26 @@ struct AuthManagerTests {
 
         await #expect(throws: AuthError.tokenRequestFailed(status: 500)) { try await manager.refresh(asOf: now) }
         #expect(try store.tokens() != nil)
+    }
+
+    @Test func refreshPersistFailureDropsTheRotatedTokenSoItCannotReplay() async throws {
+        defer { AuthStubURLProtocol.reset() }
+        let keychain = InMemoryKeychain()
+        let store = TokenStore(keychain: keychain, accessGroup: "test.group")
+        let manager = AuthManager(session: AuthStubURLProtocol.makeSession(), store: store, metadata: metadata)
+        try store.setClientID("c")
+        try store.setTokens(TokenSet(accessToken: "at", refreshToken: "rt-old", accessTokenExpiresAt: now.addingTimeInterval(10)))
+
+        // The server rotates on the 200; then the Keychain write fails.
+        AuthStubURLProtocol.install(status: 200, text: #"{"access_token":"at-new","refresh_token":"rt-new","expires_in":600}"#)
+        keychain.failWritesWith(.unhandled(status: -25308))
+
+        // The now-invalid rt-old must not survive to be replayed: dropping it
+        // forces a clean re-auth rather than a family-revocation event.
+        await #expect(throws: AuthError.authRequired) { try await manager.refresh(asOf: now) }
+
+        keychain.failWritesWith(nil)
+        #expect(try store.tokens() == nil)
     }
 
     @Test func transportFailureOnRefreshSurfacesTransport() async throws {

@@ -44,7 +44,9 @@ public struct PKCE: Sendable, Equatable {
         return random(using: &generator)
     }
 
-    private static func base64URLNoPadding(_ data: Data) -> String {
+    /// base64url without padding (RFC 4648 §5). Shared with OAuth `state`
+    /// generation, which needs the same URL-safe alphabet.
+    static func base64URLNoPadding(_ data: Data) -> String {
         data.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")

@@ -13,6 +13,7 @@ final class InMemoryKeychain: KeychainItemStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var items: [KeychainItem: Data] = [:]
     private var failure: KeychainError?
+    private var writeFailure: KeychainError?
 
     init() {}
 
@@ -22,6 +23,13 @@ final class InMemoryKeychain: KeychainItemStoring, @unchecked Sendable {
     /// is present but refusing (locked, entitlement missing, hardware fault).
     func failEverythingWith(_ error: KeychainError?) {
         lock.withLock { failure = error }
+    }
+
+    /// Makes only `set` throw, so a test can let reads and deletes succeed while
+    /// a write fails: the shape of a token-persist failure after a network
+    /// refresh already rotated the token server-side.
+    func failWritesWith(_ error: KeychainError?) {
+        lock.withLock { writeFailure = error }
     }
 
     /// Puts bytes in place without going through the store, so a corrupted or
@@ -46,6 +54,7 @@ final class InMemoryKeychain: KeychainItemStoring, @unchecked Sendable {
     func set(_ data: Data, for item: KeychainItem) throws {
         try lock.withLock {
             if let failure { throw failure }
+            if let writeFailure { throw writeFailure }
             items[item] = data
         }
     }

@@ -87,9 +87,33 @@ public actor AuthManager {
 
     // MARK: - Authorization URL (opened by item 10)
 
+    /// A CSPRNG `state` for one authorization request (SPEC 5.1 step 4).
+    ///
+    /// 24 random bytes (192 bits), base64url so it survives the query without
+    /// re-encoding. The caller keeps this, passes it to ``authorizationURL(pkce:state:)``,
+    /// and hands it back to ``exchange(code:state:expectedState:pkce:asOf:)`` as
+    /// `expectedState`, where a mismatch is rejected. The RNG is injected for
+    /// reproducible tests.
+    public static func makeState(using rng: inout some RandomNumberGenerator) -> String {
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(24)
+        for _ in 0..<24 { bytes.append(rng.next()) }
+        return PKCE.base64URLNoPadding(Data(bytes))
+    }
+
+    public static func makeState() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return makeState(using: &generator)
+    }
+
     /// Builds the `/oauth/authorize` URL for the consent sheet. Pure: no
     /// network, so item 10 can drive the sheet and hand the `code` back to
-    /// ``exchange(code:pkce:)``.
+    /// ``exchange(code:state:expectedState:pkce:asOf:)``.
+    ///
+    /// The caller must generate `state` with ``makeState()`` and later pass the
+    /// same value as `expectedState` to `exchange`. State verification is not
+    /// optional: `exchange` requires it, so a caller cannot complete the flow
+    /// without it.
     public func authorizationURL(pkce: PKCE, state: String) throws -> URL {
         guard let clientID = try store.clientID() else { throw AuthError.notRegistered }
         guard var components = URLComponents(url: metadata.authorizationEndpoint, resolvingAgainstBaseURL: false) else {
@@ -111,7 +135,19 @@ public actor AuthManager {
 
     /// Exchanges an authorization code for the token pair and persists it
     /// (SPEC 5.1 step 5). `now` stamps the access-token expiry from `expires_in`.
-    public func exchange(code: String, pkce: PKCE, asOf now: Date = Date()) async throws {
+    ///
+    /// `returnedState` is the `state` from the callback URL; `expectedState` is
+    /// what ``makeState()`` produced for this request. They must match, or the
+    /// code is rejected before the token endpoint is touched: this is where the
+    /// SPEC 5.1 `state` check lives, so it cannot be skipped by the sheet code.
+    public func exchange(
+        code: String,
+        state returnedState: String,
+        expectedState: String,
+        pkce: PKCE,
+        asOf now: Date = Date()
+    ) async throws {
+        guard returnedState == expectedState else { throw AuthError.stateMismatch }
         guard let clientID = try store.clientID() else { throw AuthError.notRegistered }
         let tokens = try await tokenRequest(
             [
@@ -154,7 +190,17 @@ public actor AuthManager {
             ],
             asOf: now
         )
-        try store.setTokens(refreshed)
+        // A successful refresh has already rotated the token server-side:
+        // `current.refreshToken` is now invalid. If persisting the new pair
+        // fails, the stored old token must not survive, or the next refresh
+        // replays it and the server reads that as theft and revokes the whole
+        // family (SPEC 5.3). Dropping it forces a clean re-auth instead.
+        do {
+            try store.setTokens(refreshed)
+        } catch {
+            try? store.deleteTokens()
+            throw AuthError.authRequired
+        }
         return refreshed
     }
 

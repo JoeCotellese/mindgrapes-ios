@@ -11,6 +11,11 @@ public enum AuthError: Error, Equatable, Sendable {
     /// retried blindly.
     case authRequired
 
+    /// The `state` returned on the OAuth callback did not match the one sent
+    /// with the authorization request: a possible CSRF or a crossed flow. The
+    /// code is rejected before it reaches the token endpoint.
+    case stateMismatch
+
     /// Code exchange or refresh was attempted before Dynamic Client
     /// Registration persisted a `client_id`.
     case notRegistered
