@@ -114,9 +114,11 @@ struct CaptureView: View {
             // Flush anything a prior session left queued: .onChange does not fire
             // for the initial .active, so this is the launch drain.
             await drain()
+        } catch AppComposition.CompositionError.notOnboarded {
+            status = "Sign in first, then reopen capture."
         } catch {
             log.error("prepare failed: \(String(describing: error), privacy: .public)")
-            status = "Sign in first, then reopen capture."
+            status = "Couldn't open local storage. Try reopening the app."
         }
     }
 
@@ -181,6 +183,8 @@ struct CaptureView: View {
         switch outcome {
         case .confirmed(let experienceID): "Saved ✓ experience \(experienceID)"
         case .queued: "Saved. It'll sync when you're online."
+        case .needsSignIn: "Saved. Sign in again to send it."
+        case .failed: "Saved, but the server rejected it."
         case .rejected(let reason): reason == "empty" ? "Nothing to save." : "Could not save that (\(reason))."
         }
     }

@@ -35,13 +35,17 @@ struct CaptureIntentRunnerTests {
         deinit { try? FileManager.default.removeItem(at: directory) }
     }
 
-    private func runner(_ fixture: Fixture, uploadBudget: Duration = .seconds(10)) -> CaptureIntentRunner {
+    private func runner(
+        _ fixture: Fixture,
+        uploadBudget: Duration = .seconds(10),
+        token: @escaping @Sendable () async throws -> String = { "test-token" }
+    ) -> CaptureIntentRunner {
         let queue = fixture.makeQueue()
         let client = BrainClient(
             config: ServerConfig(baseURL: URL(string: "https://grapes.example.ts.net")!),
             session: CaptureRunnerStubURLProtocol.makeSession()
         )
-        let drainer = CaptureDrainer(queue: queue, client: client, accessToken: { "test-token" })
+        let drainer = CaptureDrainer(queue: queue, client: client, accessToken: token)
         return CaptureIntentRunner(queue: queue, drainer: drainer, appGroup: fixture.appGroup, uploadBudget: uploadBudget)
     }
 
@@ -93,6 +97,26 @@ struct CaptureIntentRunnerTests {
         // Durable and not confirmed: the record survives the abandoned attempt.
         let queue = fixture.makeQueue()
         #expect(try await queue.allSnapshots().first?.experienceID == nil)
+    }
+
+    @Test func aTerminallyRejectedNoteReportsFailedNotQueued() async throws {
+        // A 400 is terminal; the user must not be told "it'll sync".
+        CaptureRunnerStubURLProtocol.install(status: 400)
+        defer { CaptureRunnerStubURLProtocol.reset() }
+
+        let fixture = try Fixture()
+        let outcome = await runner(fixture).captureNote("Doomed thought.")
+        #expect(outcome == .failed)
+        // Still durable and visible (failed records stay for export, item 18).
+        #expect(try await fixture.makeQueue().allSnapshots().first?.state == .failed)
+    }
+
+    @Test func aDeadRefreshReportsNeedsSignIn() async throws {
+        // No stub: the token provider fails before any request, parking the queue.
+        let fixture = try Fixture()
+        let outcome = await runner(fixture, token: { throw AuthError.authRequired }).captureNote("Parked thought.")
+        #expect(outcome == .needsSignIn)
+        #expect(try await fixture.makeQueue().allSnapshots().first?.state == .authRequired)
     }
 
     // MARK: - Photos

@@ -10,14 +10,24 @@ import Foundation
 /// record that has not confirmed yet is a success (``queued``), because the
 /// capture is safe on disk and the queue will deliver it.
 public enum CaptureOutcome: Sendable, Equatable {
-    /// Nothing usable was captured (empty note, or an image that will not decode).
-    /// The `reason` is a short stable code, not a user string.
+    /// Nothing usable was captured (empty note, or an image that will not decode),
+    /// so nothing was enqueued. The `reason` is a short stable code, not a user
+    /// string. `"empty"` / `"bad_image"` are user-fixable input; `"save_failed"`
+    /// is a durable-write failure (the capture was lost) and must not be spoken
+    /// as if the input were merely empty.
     case rejected(reason: String)
     /// Delivered and confirmed within the budget; carries the server id.
     case confirmed(experienceID: String)
     /// Durable and will sync: enqueued, but not confirmed within the upload budget
     /// (offline, slow, or backed off). Still a success.
     case queued
+    /// Enqueued and durable, but the server rejected it terminally within the
+    /// budget (a `400`/`413`/`415`): it will not sync on its own. Not a lost
+    /// capture, but not a silent "will sync" either.
+    case failed
+    /// Enqueued and durable, but parked because the session needs re-auth (a dead
+    /// refresh). It syncs once the user signs in again; connectivity is not the issue.
+    case needsSignIn
 }
 
 /// Runs a capture end to end for an App Intent.
@@ -88,23 +98,42 @@ public struct CaptureIntentRunner: Sendable {
             imageFilename: filename, description: text, occurredAt: now,
             coordinate: location?.coordinate, placeLabel: location?.placeLabel
         ) else {
+            // The derivative is spooled but no record will name it; delete it so
+            // it is not orphaned (only record-backed spool files are ever reclaimed).
+            deleteSpool(filename)
             return .rejected(reason: "bad_image")
         }
         do {
             let enqueued = try await queue.enqueue(photo: draft, now: now)
             return await settle(id: enqueued.id, now: now)
         } catch {
+            deleteSpool(filename)
             return .rejected(reason: "save_failed")
         }
     }
 
     /// Attempts one bounded upload, then reports what the record settled to.
+    ///
+    /// A record that reaches a terminal `.failed` or a parked `.authRequired`
+    /// within the budget is reported as such rather than as `.queued`, so the
+    /// caller does not tell the user "it'll sync" about a capture that will not.
     private func settle(id: UUID, now: Date) async -> CaptureOutcome {
-        let snapshot = await drainWithinBudget(id: id, now: now)
-        if let snapshot, snapshot.state == .succeeded, let experienceID = snapshot.experienceID {
-            return .confirmed(experienceID: experienceID)
+        guard let snapshot = await drainWithinBudget(id: id, now: now) else { return .queued }
+        switch snapshot.state {
+        case .succeeded:
+            return snapshot.experienceID.map(CaptureOutcome.confirmed) ?? .queued
+        case .failed:
+            return .failed
+        case .authRequired:
+            return .needsSignIn
+        case .pending, .inFlight:
+            return .queued
         }
-        return .queued
+    }
+
+    /// Best-effort delete of a spooled derivative that never got a record.
+    private func deleteSpool(_ filename: String) {
+        try? FileManager.default.removeItem(at: appGroup.photoSpoolFileURL(named: filename))
     }
 
     /// Runs one drain pass, abandoning the wait (not the record) once the budget

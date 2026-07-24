@@ -4,6 +4,9 @@
 import AppIntents
 import Foundation
 import MindGrapesKit
+import OSLog
+
+private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "intents")
 
 /// "Hey Siri, capture a thought." Prompts for the note, runs the pipeline, and
 /// speaks the outcome. The result never waits on the round-trip (SPEC 7.1).
@@ -15,8 +18,16 @@ struct CaptureNoteIntent: AppIntent {
     var text: String
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let runner = try? AppComposition.make().runner else {
+        let runner: CaptureIntentRunner
+        do {
+            runner = try AppComposition.make().runner
+        } catch AppComposition.CompositionError.notOnboarded {
             return .result(dialog: notOnboardedDialog)
+        } catch {
+            // A store/App-Group failure means the note was NOT saved; do not tell
+            // the user to sign in (they would not retry a lost capture).
+            log.error("note intent composition failed: \(String(describing: error), privacy: .public)")
+            return .result(dialog: storageFailureDialog)
         }
         let outcome = await runner.captureNote(text)
         return .result(dialog: IntentDialog(stringLiteral: outcome.spokenPhrase))
@@ -36,8 +47,14 @@ struct CapturePhotoIntent: AppIntent {
     var caption: String
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard let runner = try? AppComposition.make().runner else {
+        let runner: CaptureIntentRunner
+        do {
+            runner = try AppComposition.make().runner
+        } catch AppComposition.CompositionError.notOnboarded {
             return .result(dialog: notOnboardedDialog)
+        } catch {
+            log.error("photo intent composition failed: \(String(describing: error), privacy: .public)")
+            return .result(dialog: storageFailureDialog)
         }
         let outcome = await runner.capturePhoto(photo.data, description: caption)
         return .result(dialog: IntentDialog(stringLiteral: outcome.spokenPhrase))
@@ -57,15 +74,26 @@ struct OpenCaptureIntent: AppIntent {
 }
 
 private let notOnboardedDialog = IntentDialog("Sign in to MindGrapes first, then try again.")
+private let storageFailureDialog = IntentDialog("Something went wrong saving that. Please try again.")
 
 extension CaptureOutcome {
-    /// What Siri says back. Success either way (SPEC 7.1): a queued capture is
-    /// safe on disk and will sync.
+    /// What Siri says back. A durable capture is a success (SPEC 7.1) even before
+    /// it confirms; only genuine failures — a lost write, a terminal reject, or a
+    /// dead session — say otherwise, so the user knows to act.
     var spokenPhrase: String {
         switch self {
-        case .confirmed: "Saved."
-        case .queued: "Saved. It'll sync when you're back online."
-        case .rejected: "There was nothing to save."
+        case .confirmed:
+            "Saved."
+        case .queued:
+            "Saved. It'll sync when you're back online."
+        case .needsSignIn:
+            "Saved, but you'll need to sign in to MindGrapes again to send it."
+        case .failed:
+            "Saved, but MindGrapes couldn't send it."
+        case .rejected(let reason):
+            // "empty" is user-fixable input; anything else is a real save failure
+            // and must not be spoken as if there was simply nothing to save.
+            reason == "empty" ? "There was nothing to save." : "Something went wrong saving that. Please try again."
         }
     }
 }
