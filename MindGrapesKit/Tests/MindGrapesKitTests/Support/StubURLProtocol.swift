@@ -6,28 +6,31 @@ import Foundation
 /// Intercepts every request on a session configured with it and answers from
 /// whatever the current test installed.
 ///
-/// The handler is process-global because `URLProtocol` is instantiated by
-/// `URLSession`, which gives a test no seam to inject through. Suites using this
-/// must be `.serialized`; two tests scripting different answers at once would
-/// read each other's.
-final class StubURLProtocol: URLProtocol {
+/// The handler storage is process-global because `URLProtocol` is instantiated
+/// by `URLSession`, which gives a test no seam to inject through. To let
+/// independent suites use the stub without clobbering each other under parallel
+/// execution, storage is keyed per **subclass**: each concrete stub type below
+/// is its own channel. Within one channel, suites must still be `.serialized`,
+/// since two of its tests scripting different answers at once would collide.
+class StubURLProtocolBase: URLProtocol {
     /// Either an HTTP answer or a transport failure, which are the two shapes
     /// SPEC 6.3's error table distinguishes.
     typealias Handler = @Sendable (URLRequest) -> Result<(HTTPURLResponse, Data), URLError>
 
-    nonisolated(unsafe) private static var handler: Handler?
+    nonisolated(unsafe) private static var handlers: [ObjectIdentifier: Handler] = [:]
     private static let lock = NSLock()
 
     /// A session that routes through this protocol and caches nothing, so one
     /// test's 200 cannot answer the next test's request.
     static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [StubURLProtocol.self]
+        configuration.protocolClasses = [self]
         return URLSession(configuration: configuration)
     }
 
     static func install(_ handler: @escaping Handler) {
-        lock.withLock { Self.handler = handler }
+        let channel = ObjectIdentifier(self)
+        lock.withLock { Self.handlers[channel] = handler }
     }
 
     /// Answers every request with the given status and body.
@@ -53,7 +56,8 @@ final class StubURLProtocol: URLProtocol {
     }
 
     static func reset() {
-        lock.withLock { Self.handler = nil }
+        let channel = ObjectIdentifier(self)
+        lock.withLock { Self.handlers[channel] = nil }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -61,7 +65,8 @@ final class StubURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let handler = Self.lock.withLock({ Self.handler }) else {
+        let channel = ObjectIdentifier(type(of: self))
+        guard let handler = Self.lock.withLock({ Self.handlers[channel] }) else {
             // A test that forgot to install one should fail loudly rather than
             // hang or silently succeed.
             client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
@@ -80,3 +85,10 @@ final class StubURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+/// The default channel. Used by `BrainClientTests`.
+final class StubURLProtocol: StubURLProtocolBase {}
+
+/// A separate channel for `AuthManagerTests`, so it can script the OAuth token
+/// endpoint without racing the `BrainClient` suite under parallel `make test`.
+final class AuthStubURLProtocol: StubURLProtocolBase {}
