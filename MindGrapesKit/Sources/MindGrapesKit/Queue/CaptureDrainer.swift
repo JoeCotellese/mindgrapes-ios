@@ -115,15 +115,19 @@ public struct CaptureDrainer: Sendable {
         let body: MultipartFormBody
         do {
             body = try await queue.imageMultipartBody(id: id, timeZone: timeZone)
-        } catch {
-            // Unlike a note, a photo body genuinely can fail to encode: a spool
-            // file can vanish (SPEC 8.1 keeps bytes out of the DB, so they are
-            // not recoverable from the record). That is terminal for this record
-            // only, so fail it and let the pass keep draining the rest instead of
-            // aborting and re-attempting the same doomed encode forever.
+        } catch let error as CaptureEncodingError {
+            // A CaptureEncodingError is a permanent refusal: the derivative is
+            // gone (SPEC 8.1 keeps bytes out of the DB, so they cannot be rebuilt)
+            // or the record is malformed. Terminal for this record only, so fail
+            // it and keep draining the rest rather than re-attempting a doomed
+            // encode forever.
             try await queue.markUnsendable(id: id, code: encodingCode(for: error))
             return
         }
+        // Any *other* throw from the body read (a spool file present but
+        // momentarily unreadable under data protection) is transient. It
+        // propagates, aborting the pass and leaving this record inFlight for the
+        // next pass's recoverInterrupted to reclaim — the bytes are still on disk.
         do {
             let response = try await client.postImage(body: body, accessToken: token)
             try await queue.markSucceeded(id: id, experienceID: response.experienceID)
@@ -134,10 +138,10 @@ public struct CaptureDrainer: Sendable {
 
     /// A short, stable code for the recent-captures list; the full error is in
     /// the log, this is what the row shows.
-    private func encodingCode(for error: any Error) -> String {
+    private func encodingCode(for error: CaptureEncodingError) -> String {
         switch error {
-        case CaptureEncodingError.spoolFileUnreadable: "spool_missing"
-        case CaptureEncodingError.missingImageFilename: "no_image"
+        case .spoolFileMissing: "spool_missing"
+        case .missingImageFilename: "no_image"
         default: "encode_failed"
         }
     }

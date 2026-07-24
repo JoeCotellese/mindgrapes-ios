@@ -72,17 +72,27 @@ struct CaptureView: View {
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
             Task {
+                // Hold the interlock across the load: an iCloud-backed original can
+                // take seconds, and without this the buttons stay live for a second
+                // overlapping capture.
+                busy = true
+                status = "Reading photo…"
                 if let data = try? await item.loadTransferable(type: Data.self) {
+                    busy = false
                     savePhoto(data)
                 } else {
                     status = "Could not read that photo."
+                    busy = false
                 }
                 photoItem = nil
             }
         }
         .sheet(isPresented: $showCamera) {
-            CameraPicker { data in savePhoto(data) }
-                .ignoresSafeArea()
+            CameraPicker(
+                onCapture: { data in savePhoto(data) },
+                onFailure: { status = "Could not read that photo." }
+            )
+            .ignoresSafeArea()
         }
     }
 
@@ -140,22 +150,24 @@ struct CaptureView: View {
     }
 
     /// Spools the picked or shot image, enqueues a photo capture, and drains it.
-    /// Any typed text is reused as the description; otherwise the template fills in.
+    ///
+    /// The description is always the timestamp template, deliberately not the note
+    /// field: sharing that field would silently consume a note the user meant to
+    /// Save as its own capture. Typed photo captions belong to the real capture UI
+    /// (issue 17); Slice 2 only proves the photo pipeline reaches the server.
     private func savePhoto(_ data: Data) {
         guard let queue, let drainer, let appGroup else { return }
         busy = true
         Task {
             do {
                 let filename = try PhotoSpooler.spool(data, into: appGroup)
-                let description = NoteDraft(content: text)?.content
-                    ?? PhotoDescription.template(occurredAt: Date())
+                let description = PhotoDescription.template(occurredAt: Date())
                 guard let draft = PhotoDraft(imageFilename: filename, description: description) else {
                     status = "Could not prepare that photo."
                     busy = false
                     return
                 }
                 let enqueued = try await queue.enqueue(photo: draft)
-                text = ""
                 status = "Sending photo…"
                 try await drainer.drainOnce()
                 let final = try await queue.snapshot(id: enqueued.id)
