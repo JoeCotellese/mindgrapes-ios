@@ -18,6 +18,13 @@ public enum CaptureEncodingError: Error, Equatable, Sendable {
     /// A photo record with no spool file to read bytes from.
     case missingImageFilename
 
+    /// A photo record names a spool file that is not there: the derivative was
+    /// deleted, never finished writing, or the container moved. Terminal, since a
+    /// downscaled derivative cannot be rebuilt from the record. Distinct from a
+    /// file that exists but momentarily cannot be read (a locked-device data
+    /// protection failure), which is transient and must not be classified here.
+    case spoolFileMissing(String)
+
     /// The caller supplied a boundary that is empty, over 70 characters, or
     /// carries something outside the token characters RFC 2046 allows.
     case invalidBoundary(String)

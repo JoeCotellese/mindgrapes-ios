@@ -367,4 +367,32 @@ struct CaptureQueueTests {
         #expect(try await queue.snapshot(id: fresh.id)?.state == .succeeded)
         #expect(try await queue.snapshot(id: pending.id)?.state == .pending)
     }
+
+    @Test func pruneReclaimsStaleFailedPhotosAndTheirSpoolFilesToBoundDiskGrowth() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let old = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        let recent = now.addingTimeInterval(-1 * 24 * 60 * 60)
+
+        // A terminally failed photo still holds its derivative; nothing but prune
+        // reclaims it, so without this a server-rejected photo leaks disk forever.
+        let staleURL = fixture.appGroup.photoSpoolFileURL(named: "stale.jpg")
+        let recentURL = fixture.appGroup.photoSpoolFileURL(named: "recent.jpg")
+        try Data("stale-bytes".utf8).write(to: staleURL)
+        try Data("recent-bytes".utf8).write(to: recentURL)
+
+        let stale = try await queue.enqueue(photo: photo(filename: "stale.jpg"), now: old)
+        try await queue.markFailed(id: stale.id, error: .badRequest, now: old)
+        let recentFailed = try await queue.enqueue(photo: photo(filename: "recent.jpg"), now: recent)
+        try await queue.markFailed(id: recentFailed.id, error: .badRequest, now: recent)
+
+        try await queue.prune(now: now)
+
+        #expect(try await queue.snapshot(id: stale.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: staleURL.path))
+        // The recent failure stays visible and its bytes exportable until it ages out.
+        #expect(try await queue.snapshot(id: recentFailed.id)?.state == .failed)
+        #expect(FileManager.default.fileExists(atPath: recentURL.path))
+    }
 }

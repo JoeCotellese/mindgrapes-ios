@@ -36,7 +36,7 @@ Done and merged to `main`, all `loop`-verified in `MindGrapesKit`:
 - #11 photo downscale
 
 Not started: #6, #8, #9, #10, #12, #13, #14, #15, #16, #17, #18, #19, #20,
-#21, #22, #23.
+#21, #23.
 
 The foundation and most of the offline/queue core exist and are tested. What
 is missing is everything a human touches: auth wired to a sheet, a URL-entry
@@ -161,8 +161,8 @@ then), #17 capture screen done properly (dictation, focus behavior), #18
 settings/queue status (recent captures with sync state, one re-auth prompt,
 failed-record export). Then #19–#21 verification and the eight success
 conditions.
-**Maps to:** #16, #17, #18, #19, #20, #21. #22 CI slots in before Slice 2; #23
-app-hosted tests wherever the Keychain round trip needs real verification.
+**Maps to:** #16, #17, #18, #19, #20, #21. #23 app-hosted tests wherever the
+Keychain round trip needs real verification.
 
 ## Slice risks
 
@@ -608,32 +608,6 @@ Phase 1 is not done when the code compiles; it is done when these pass:
    the template description and OCR attached.
 
 ### Added after the first five items
-
-#### 22. Continuous integration
-
-`chore` | `loop`
-
-Fits before Slice 2. Nothing currently enforces the test suite; every green
-result so far came from running `make test` by hand, and a PR with a failing
-suite would merge without complaint. (History note: a GitHub Actions gate was
-tried, then replaced with a local pre-push hook, which itself hit a
-`SwiftDataMacros` plugin-not-found flake under the git-hook environment and was
-disabled. Root cause is still open; see the queue-work session notes.)
-
-- A CI path on every PR and on `main`: `make test`, plus the package built for
-  `generic/platform=iOS` and `generic/platform=watchOS`, plus the app built
-  for a simulator.
-- Fix `make build-kit` while here: its two `xcodebuild` lines each `cd` in a
-  separate subshell, so only the first runs from the package directory. Both
-  platforms do build; the target reports one success where it should report
-  three.
-- Run the suite more than once per job (or use the `test-repeat` target). The
-  `ModelContainer` segfault (SPEC 4.3) was a 1-in-10 failure a single-run job
-  would have shipped.
-
-Acceptance: a PR with a deliberately failing test cannot be merged. A PR that
-breaks the watchOS build fails the job. Both verified by pushing a throwaway
-branch.
 
 #### 23. App-hosted test target for entitlement-gated code
 

@@ -60,7 +60,7 @@ public actor CaptureQueue {
 
     // MARK: - Drain serialization
 
-    /// Held for the length of one ``NoteDrainer`` pass. That pass spans several
+    /// Held for the length of one ``CaptureDrainer`` pass. That pass spans several
     /// `await`s, so the actor serializing each *call* is not enough on its own:
     /// two overlapping passes would each run ``recoverInterrupted(now:)`` and
     /// reset the other's legitimately `inFlight` records back to `pending`, then
@@ -146,6 +146,21 @@ public actor CaptureQueue {
         try context.save()
     }
 
+    /// Fails a record that can never be sent as-is: its body could not be
+    /// encoded (a photo whose spool file vanished, say). Terminal, kept visible
+    /// with its error like any other ``markFailed`` terminal outcome.
+    ///
+    /// Separate from ``markFailed(id:error:now:)`` because this is a client-side
+    /// encoding failure, not a server ``BrainClientError``; the guard against
+    /// resurrecting a settled record is the same. No-op if the id is unknown.
+    public func markUnsendable(id: UUID, code: String) throws {
+        guard let record = try record(id: id) else { return }
+        guard record.state == .inFlight || record.state == .pending else { return }
+        record.state = .failed
+        record.lastErrorCode = code
+        try context.save()
+    }
+
     // MARK: - Auth expiry (SPEC 8.5)
 
     /// Parks every record that could still send (`pending` or `inFlight`) in
@@ -196,19 +211,27 @@ public actor CaptureQueue {
         try context.save()
     }
 
-    /// Deletes succeeded records older than the 7-day retention window (SPEC
-    /// 8.1). Their spool files are already gone from ``markSucceeded``; this also
-    /// clears any that lingered.
+    /// Deletes settled records older than the 7-day retention window (SPEC 8.1).
+    ///
+    /// Both `succeeded` and `failed` are reclaimed. A succeeded record's spool
+    /// file is already gone from ``markSucceeded``; a terminally `failed` photo
+    /// still holds its derivative (kept visible and exportable until now, item
+    /// 18), so this is also what bounds spool-disk growth from server-rejected
+    /// photos — without it a `.failed` photo's ~150 KB derivative would never be
+    /// reclaimed, since nothing else deletes it.
     ///
     /// ponytail: ages by `createdAt` because the model has no `succeededAt`.
-    /// Captures succeed within seconds of creation, so the two are the same day;
-    /// add a `succeededAt` field if a capture ever sits failed for a week and
-    /// then succeeds.
+    /// Captures settle within seconds of creation, so the two are the same day;
+    /// add a `settledAt` field if a capture ever sits pending for a week and then
+    /// settles.
     public func prune(now: Date = Date()) throws {
         let cutoff = now.addingTimeInterval(-retention)
         let succeededRaw = CaptureState.succeeded.rawValue
+        let failedRaw = CaptureState.failed.rawValue
         let descriptor = FetchDescriptor<CaptureRecord>(
-            predicate: #Predicate { $0.stateRaw == succeededRaw && $0.createdAt < cutoff }
+            predicate: #Predicate {
+                ($0.stateRaw == succeededRaw || $0.stateRaw == failedRaw) && $0.createdAt < cutoff
+            }
         )
         for record in try context.fetch(descriptor) {
             deleteSpoolFile(for: record)
@@ -234,6 +257,41 @@ public actor CaptureQueue {
             throw CaptureEncodingError.recordNotFound(id)
         }
         return try CaptureWireEncoder.noteBody(for: record, timeZone: timeZone)
+    }
+
+    /// Encodes the `/capture/image` multipart body for one record, reading the
+    /// spooled derivative the record names.
+    ///
+    /// The record and the spool bytes both stay on this side of the actor
+    /// boundary, mirroring ``noteBody(id:timeZone:)``.
+    ///
+    /// The read failure is split by cause so the drain can classify it:
+    /// - A record naming a spool file that is **not there** throws
+    ///   ``CaptureEncodingError/spoolFileMissing(_:)`` — terminal, since the
+    ///   derivative cannot be rebuilt from the record.
+    /// - A spool file that **exists but will not read** (a locked-device data
+    ///   protection failure, say) lets `Data(contentsOf:)`'s own error propagate.
+    ///   The drain treats that as transient and leaves the record reclaimable,
+    ///   because the bytes are still on disk and the next pass may succeed.
+    ///
+    /// Both distinctions are latent while the only drain is a foreground one on an
+    /// unlocked device (Slice 2), but they are what keeps Slice 5's background,
+    /// possibly-locked drain from terminally failing a recoverable capture.
+    public func imageMultipartBody(id: UUID, timeZone: TimeZone = .current, boundary: String? = nil) throws -> MultipartFormBody {
+        guard let record = try record(id: id) else {
+            throw CaptureEncodingError.recordNotFound(id)
+        }
+        guard let filename = record.imageFilename?.nonBlank else {
+            throw CaptureEncodingError.missingImageFilename
+        }
+        let url = appGroup.photoSpoolFileURL(named: filename)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw CaptureEncodingError.spoolFileMissing(filename)
+        }
+        let imageData = try Data(contentsOf: url)
+        return try CaptureWireEncoder.imageMultipartBody(
+            for: record, imageData: imageData, timeZone: timeZone, boundary: boundary
+        )
     }
 
     // MARK: - Reading

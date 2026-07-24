@@ -53,6 +53,9 @@ targets:
       properties:
         CFBundleDisplayName: MindGrapes
         UILaunchScreen: {}
+        # Slice 2 camera capture. The photo picker uses the out-of-process
+        # PHPicker and needs no photo-library string.
+        NSCameraUsageDescription: MindGrapes uses the camera to capture a photo memory.
         # The OAuth callback scheme (SPEC 5.2). Registered here rather than
         # with the auth feature because it is app identity, not behavior:
         # the server's DCR registration must match this string exactly.
