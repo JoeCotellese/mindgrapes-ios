@@ -1,0 +1,12 @@
+#!/bin/sh
+# ABOUTME: Runs the package suite before a push leaves the machine.
+# ABOUTME: Replaces the old GitHub Actions gate; nothing verifies pushes server-side now.
+
+# `make test-repeat` runs the suite five times, which is what catches the
+# 1-in-10 ModelContainer segfault (SPEC 4.3) a single run would ship. It builds
+# the tests once, so five runs is about fifteen seconds.
+#
+# Bypass with `git push --no-verify` when a push must go out with a known-red or
+# unbuildable tree (a WIP branch, a docs-only fix mid-refactor). The gate is
+# advisory: it does not, and cannot, block a merge on GitHub.
+exec make test-repeat
