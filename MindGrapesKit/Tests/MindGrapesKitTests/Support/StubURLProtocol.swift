@@ -92,3 +92,7 @@ final class StubURLProtocol: StubURLProtocolBase {}
 /// A separate channel for `AuthManagerTests`, so it can script the OAuth token
 /// endpoint without racing the `BrainClient` suite under parallel `make test`.
 final class AuthStubURLProtocol: StubURLProtocolBase {}
+
+/// A separate channel for `ServerDiscoveryTests`, so its `/healthz` probe cases
+/// do not race the `BrainClient` suite scripting the same endpoint.
+final class DiscoveryStubURLProtocol: StubURLProtocolBase {}
