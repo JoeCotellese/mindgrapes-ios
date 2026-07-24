@@ -2,10 +2,20 @@
 # ABOUTME: `make test` is the loop signal; it needs no simulator or server.
 
 SIMULATOR ?= platform=iOS Simulator,name=iPhone 17 Pro
+REPEAT ?= 5
 
 .PHONY: test
 test: ## Run the MindGrapesKit unit suite on the host (no simulator needed)
 	cd MindGrapesKit && swift test
+
+.PHONY: test-repeat
+test-repeat: ## Run the unit suite $(REPEAT) times to surface flaky failures
+	cd MindGrapesKit && swift build --build-tests
+	@i=1; while [ $$i -le $(REPEAT) ]; do \
+		echo "--- run $$i of $(REPEAT) ---"; \
+		(cd MindGrapesKit && swift test --skip-build) || exit 1; \
+		i=$$((i + 1)); \
+	done
 
 .PHONY: build-kit
 build-kit: ## Build the package for the host, iOS, and watchOS

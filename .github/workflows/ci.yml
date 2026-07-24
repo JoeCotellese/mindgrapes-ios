@@ -1,0 +1,40 @@
+# ABOUTME: CI gate for every pull request and every push to main.
+# ABOUTME: Runs the package suite repeatedly, then builds the kit and the app.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # SPEC 4.3: concurrent ModelContainer setup segfaulted about 1 run in 10.
+      # A single-run job would have shipped it, so the gate runs the suite five times.
+      - name: Test (repeated)
+        run: make test-repeat
+
+      - name: Build kit for iOS and watchOS
+        run: make build-kit
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      # A named device (the local default is an iPhone 17 Pro) is not guaranteed
+      # to exist on a runner image, so build against any simulator SDK instead.
+      - name: Build app for simulator
+        run: make build SIMULATOR='generic/platform=iOS Simulator'
