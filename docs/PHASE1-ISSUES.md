@@ -25,8 +25,11 @@ subset of that item is needed for the slice.
 
 ## Build status (2026-07-24)
 
-Done and merged to `main`, all `loop`-verified in `MindGrapesKit`:
+Done and merged to `main`. Loop items are `loop`-verified in `MindGrapesKit`
+(252 tests); UI/CoreLocation/Siri code compiles for the simulator and awaits
+HITL.
 
+Foundation and queue core:
 - #1 repo/toolchain skeleton
 - #2 core models and shared configuration
 - #3 wire encoding (note JSON + image multipart)
@@ -35,12 +38,29 @@ Done and merged to `main`, all `loop`-verified in `MindGrapesKit`:
 - #7 Keychain token store
 - #11 photo downscale
 
-Not started: #6, #8, #9, #10, #12, #13, #14, #15, #16, #17, #18, #19, #20,
-#21, #23.
+Slice 1 (submit my first memory): #8 AuthManager, #9 (thin) discovery + healthz,
+#10 interactive OAuth, #17 (rough) capture screen, plus the throwaway drain loop.
 
-The foundation and most of the offline/queue core exist and are tested. What
-is missing is everything a human touches: auth wired to a sheet, a URL-entry
-screen, a capture screen, and the two server endpoints those screens call.
+Slice 2 (photo capture): PhotoSpooler, `CaptureQueue.imageMultipartBody`, the
+`CaptureDrainer` photo branch, PhotoDescription template, and the picker/camera
+UI. Draws on the image halves of #3/#4 and a sliver of #17.
+
+Slice 3 (location): #14 `LocationProvider` (budgeted one-shot fix + non-fatal
+geocode) and the CoreLocation-backed system provider, plus the include-location
+toggle.
+
+Slice 4 (real intents): #15 `CaptureIntentRunner` and the CaptureNote /
+CapturePhoto / OpenCapture App Intents + `AppShortcutsProvider`, with the capture
+screen refactored onto the same runner.
+
+Not started: #6 (Slice 5, background transport), #12 / #13 (Slice 6, OCR + on-
+device description), #16 / #18 / #19 / #20 / #21 (Slice 7, real screens +
+verification), #23 (app-hosted keychain test).
+
+The offline/queue core, all three capture kinds (note, photo, location), and
+every entry point (screen + Siri + Shortcuts) exist and share one pipeline. What
+remains is background delivery, on-device photo understanding, the real
+onboarding/settings screens, and the device/server verification gate.
 
 ---
 
