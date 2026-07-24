@@ -10,6 +10,7 @@ build/
 *.moved-aside
 *.hmap
 *.ipa
+*.xcarchive
 *.dSYM.zip
 *.dSYM
 
@@ -29,3 +30,6 @@ Package.resolved
 # Secrets and local config
 *.xcconfig.local
 .env
+# An App Store Connect key dropped here instead of pointed at by ASC_KEY_PATH.
+private_keys/
+AuthKey_*.p8

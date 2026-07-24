@@ -1,0 +1,26 @@
+// ABOUTME: Base signing config for the app target, checked in with no account in it.
+// ABOUTME: A device build reads DEVELOPMENT_TEAM from an untracked Signing.xcconfig.local.
+
+// Simulator builds need nothing here: `make build` passes CODE_SIGNING_ALLOWED=NO
+// and runs with no team and no Apple account. This file exists for device and
+// release builds, which do need a signing identity.
+//
+// To build on a device, create Signing.xcconfig.local next to this file with
+// your ten-character Apple Developer Team ID:
+//
+//     DEVELOPMENT_TEAM = ABCDE12345
+//
+// That file is gitignored (`*.xcconfig.local`), so your account never lands in
+// the repo. The release path takes the same value from the environment instead
+// (see .env.example), so automation and the IDE stay consistent.
+//
+// A contributor on a different team also needs their own PRODUCT_BUNDLE_IDENTIFIER
+// and must register the `group.net.cotellese.mindgrapes` App Group under their
+// account; set the bundle id in the same local file. The maintainer's team owns
+// the canonical ids, so this is only for third-party device builds.
+
+DEVELOPMENT_TEAM =
+
+// The `?` makes the include optional: a fresh clone with no local file still
+// generates and builds for the simulator.
+#include? "Signing.xcconfig.local"

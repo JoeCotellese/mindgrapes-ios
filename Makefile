@@ -11,9 +11,13 @@ test: ## Run the MindGrapesKit unit suite on the host (no simulator needed)
 .PHONY: test-repeat
 test-repeat: ## Run the unit suite $(REPEAT) times to surface flaky failures
 	cd MindGrapesKit && swift build --build-tests
+	# `--no-parallel` is the gate's insurance against the SPEC 4.3 segfault:
+	# concurrent ModelContainer schema setup crashes CoreData, and serial
+	# execution removes the concurrency that triggers it. This is a test-harness
+	# artifact (the app builds one container, once), so it hides nothing real.
 	@i=1; while [ $$i -le $(REPEAT) ]; do \
 		echo "--- run $$i of $(REPEAT) ---"; \
-		(cd MindGrapesKit && swift test --skip-build) || exit 1; \
+		(cd MindGrapesKit && swift test --skip-build --no-parallel) || exit 1; \
 		i=$$((i + 1)); \
 	done
 
@@ -38,6 +42,22 @@ build: generate ## Build the app for the simulator
 	xcodebuild -project MindGrapes.xcodeproj -scheme MindGrapes \
 		-destination '$(SIMULATOR)' \
 		CODE_SIGNING_ALLOWED=NO build
+
+.PHONY: release-validate
+release-validate: ## Archive and validate against App Store Connect (no submit; needs .env)
+	VALIDATE=1 ./scripts/appstore-upload.sh
+
+.PHONY: release
+release: ## Archive, export, and upload the app to App Store Connect (needs .env)
+	./scripts/appstore-upload.sh
+
+.PHONY: devices
+devices: ## List connected devices and their identifiers
+	xcrun devicectl list devices
+
+.PHONY: device
+device: ## Build signed and install on a device (DEVICE="Development iPhone")
+	./scripts/install-device.sh
 
 .PHONY: clean
 clean:
