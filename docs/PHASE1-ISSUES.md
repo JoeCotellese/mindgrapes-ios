@@ -4,9 +4,13 @@ Companion to `SPEC.md`. Phase 1 is defined in SPEC section 12: a phone can be
 onboarded to a Mind Grapes server and reliably capture text and photos from
 the app, offline included.
 
-Every item below is sized to be one branch and one PR. Each carries an
-explicit verification mode, because that determines what can be built in an
-automated loop and what needs a human, a device, or a running server.
+This plan is organized around **vertical slices**. Each slice delivers
+something the primary user (Joe) can actually use end to end, even if rough
+around the edges, rather than a horizontal layer that is invisible until the
+layer above it lands. The numbered **item catalog** further down is preserved
+as the unit of PR work: each item is still one branch and one PR, and each
+slice names the items it draws on. "Thin" next to an item means only the named
+subset of that item is needed for the slice.
 
 ## Verification modes
 
@@ -19,22 +23,181 @@ automated loop and what needs a human, a device, or a running server.
 - **`server`**: needs the dev stack up (`make dev-up` in the server repo),
   and in some cases a server PR merged first.
 
-## Dependency shape
+## Build status (2026-07-24)
 
-- Items 1 through 3 are the foundation. Nothing else starts first.
-- Items 4 through 8 and 11 through 13 are the `loop` core. This is the bulk
-  of the real logic and it can all be built before the server PRs land.
-- Item 10 is the only Phase 1 item hard-blocked on a server merge.
-- Items 14 through 18 assemble the shippable app.
-- Items 19 through 21 verify it.
+Done and merged to `main`, all `loop`-verified in `MindGrapesKit`:
 
-Rough critical path: 1, 2, 3, 6, 8, 10, 16, 18, 21.
+- #1 repo/toolchain skeleton
+- #2 core models and shared configuration
+- #3 wire encoding (note JSON + image multipart)
+- #4 `BrainClient` request construction and error mapping
+- #5 `CaptureQueue` actor and retry state machine
+- #7 Keychain token store
+- #11 photo downscale
+
+Not started: #6, #8, #9, #10, #12, #13, #14, #15, #16, #17, #18, #19, #20,
+#21, #22, #23.
+
+The foundation and most of the offline/queue core exist and are tested. What
+is missing is everything a human touches: auth wired to a sheet, a URL-entry
+screen, a capture screen, and the two server endpoints those screens call.
 
 ---
 
-## Foundation
+## Slices
 
-### 1. Repo and toolchain skeleton
+Each slice is independently useful and builds on the one before. Item numbers
+refer to the catalog below.
+
+### Slice 1 — Submit my first memory
+
+**Goal.** On the phone: enter the server URL, sign in, type a note, tap Save,
+and see it confirmed by a real `experience_id` from the server. The thinnest
+real capture. Verify with a row in `brain.experiences` where
+`metadata.source = "app"`.
+
+**Reuses, already built:** #2 models (`NoteDraft`, `ServerConfig`,
+`CaptureRecord`, shared defaults), #3 note JSON encoding, #4 `BrainClient`
+(note send + `/healthz` + error classification), #5 `CaptureQueue` (enqueue,
+immediate first attempt, crash recovery come free), #7 Keychain store
+(app-side read/write; the read-only extension accessor sits idle).
+
+**Needs:**
+- **#9 (thin):** URL normalization + the `/healthz` probe only. No QR.
+- **#8 (full core):** DCR, PKCE, code exchange, refresh, `invalid_grant`
+  handling. Not shrinkable (see Slice risks). Defer only the extension
+  zero-refresh assertion path, since no extension exists yet.
+- **#10 (thin):** the `ASWebAuthenticationSession` sheet and callback.
+- **New glue, deliberately rough:** a connect/URL screen (one field, a Check
+  button showing the `/healthz` result, a Sign in button), a one-field capture
+  screen (text field, Save, a line of status text), and a ~50-line foreground
+  drain loop (`claimDue` → `BrainClient` → `markSucceeded`/`markFailed`) run
+  on save and on app foreground. This is **not** #6; it is throwaway that #6
+  replaces wholesale, so keep it dumb.
+
+**Does not need:** #6 background transport, #11–#14 pipeline, #15 formal
+intents (call the pipeline from the view for now), #16 onboarding, full #18.
+
+**Server work required, server-side:**
+- ✅ Private-use redirect URIs in DCR: server PR #45 is **merged**. OAuth
+  sign-in (#10) is unblocked; the loopback bridge is not needed.
+- ⏳ **The one remaining blocker: `POST /capture/note`** (SPEC 6.4), tracked as
+  `mindgrapes-server` #53. A sibling of `capture_image_api` calling
+  `captures.capture(..., client="app")`, reusing the existing field parsers.
+  It does not exist yet; `/capture` is extension-only (requires a URL,
+  summarizes) so it is no substitute. `effort/S`. Punt the `place_label` open
+  question by accepting-and-ignoring or omitting it; Slice 1 sends no location.
+
+Once #53 lands, the client work is unblocked.
+
+**Must-not-forget wiring.** `CaptureQueue` already parks captures in
+`authRequired` on `invalid_grant` and revives them via `resumeAfterAuth`. Slice
+1's UI must expose a "sign in again" action and call the revival on success, or
+the first token expiry strands captures with no way to free them.
+
+### Slice 2 — Photo capture (rough)
+
+**Goal.** Pick or shoot a photo, downscale, upload, confirmed.
+
+**Reuses:** #11 (built), the multipart half of #3/#4.
+**Needs:** a camera/picker button, spool-file write to the App Group, and
+`imageFilename` on the record. Description is typed or a hardcoded template;
+no OCR, no model yet.
+**Server gate:** ✅ `POST /capture/image` is **merged** to the server's `main`
+(PR #52, attachments images v1). No longer a blocker.
+**Maps to:** #11 (done), the remainder of #3/#4, a sliver of #17.
+
+### Slice 3 — Location
+
+**Goal.** Captures carry where they happened.
+
+**Needs:** #14 `LocationProvider` (one-shot fix, 3-second budget, reverse
+geocode) plus a toggle in the settings screen and the permission request.
+Notes get `lat`/`lng`/`place_label`; images get `lat`/`lng` (the image door has
+nowhere to put the label yet, per SPEC 9, and that is fine).
+**Maps to:** #14, a sliver of #18.
+
+### Slice 4 — Real intents (Siri and Shortcuts)
+
+**Goal.** "Hey Siri, capture a thought," and every entry point runs the same
+code.
+
+**Needs:** #15 intents wrapping the now-proven pipeline; refactor the screens
+to invoke them; add `AppShortcutsProvider` (pulled forward from Phase 2 —
+near-zero marginal cost once intents exist, and a capability Joe personally
+uses). This is where the "every entry point is the same intent" architecture
+gets locked in, before more UI accumulates.
+**Maps to:** #15 plus a Phase 2 pull-forward.
+
+### Slice 5 — Survives the pocket (background transport)
+
+**Goal.** Airplane-mode capture and kill-mid-upload work for real (success
+conditions 4 and 5).
+
+**Needs:** #6 background `URLSession`, spooled bodies, completion
+reconciliation, `handleEventsForBackgroundURLSession`, `NWPathMonitor` drain
+triggers. Replaces the Slice 1 drain loop. Background-session behavior is
+device-verified and fiddly, so it earns its own slice. Also unlocks the share
+extension later.
+**Maps to:** #6.
+
+### Slice 6 — Smart photos (OCR + on-device description)
+
+**Goal.** A photo of a product label becomes a standalone statement (the
+dog-food-label use case).
+
+**Needs:** #12 and #13 behind their protocol seams, the template fallback, and
+availability detection. Photos already work end to end from Slice 2; this only
+upgrades their content.
+**Maps to:** #12, #13.
+
+### Slice 7 — Polish into shippable
+
+**Goal.** The real onboarding, capture, and settings screens, then the Phase 1
+gate.
+
+**Needs:** #16 onboarding (QR once the server QR exists; manual entry until
+then), #17 capture screen done properly (dictation, focus behavior), #18
+settings/queue status (recent captures with sync state, one re-auth prompt,
+failed-record export). Then #19–#21 verification and the eight success
+conditions.
+**Maps to:** #16, #17, #18, #19, #20, #21. #22 CI slots in before Slice 2; #23
+app-hosted tests wherever the Keychain round trip needs real verification.
+
+## Slice risks
+
+- **AuthManager (#8) is not shrinkable.** The server rotates refresh tokens on
+  every refresh and treats replay as theft (family revocation, SPEC 5.4). DCR,
+  PKCE, exchange, refresh, and rotation handling all have to be right from day
+  one, or Slice 1 signs Joe out mysteriously. Keep the single-refresher rule
+  from the start even though only one process exists; it costs nothing now and
+  retrofitting is exactly what the rule exists to avoid.
+- **Every session hits refresh.** The 600-second access TTL means essentially
+  every capture session exercises the refresh path. Slice 1 hits it
+  immediately, not eventually. That is good: refresh bugs surface fast.
+- **Queue parking is already live.** See Slice 1's must-not-forget wiring:
+  revival must be wired from the first screen.
+- **Conservative retry only.** Server idempotency (`idempotency_key`) is not
+  written, so the drain retries only on transport errors and `502` (SPEC 6.3).
+  Send the key field anyway; it is ignored harmlessly and turns on aggressive
+  retry the day the server honors it.
+- **The Slice 1 drain loop is throwaway by design.** Keep it dumb (no
+  scheduling cleverness) so Slice 5 replaces it wholesale instead of untangling
+  it.
+- **SwiftData store tests stay serialized.** Any new queue-adjacent tests in
+  Slices 1–2 inherit the `@Suite(.serialized)` rule (SPEC 4.3); concurrent
+  `ModelContainer` construction segfaults CoreData.
+
+---
+
+## Item catalog (reference)
+
+The unit of PR work. Slices above draw on these; the acceptance criteria here
+are the contract. Items marked **✅ done** are merged to `main`.
+
+### Foundation
+
+#### 1. Repo and toolchain skeleton — ✅ done
 
 `chore` | `loop`
 
@@ -56,7 +219,7 @@ Acceptance: `make test` runs and passes with zero tests. `swift build`
 succeeds for both iOS and watchOS destinations. Strict concurrency produces
 no warnings.
 
-### 2. Core models and shared configuration
+#### 2. Core models and shared configuration — ✅ done
 
 `feat` | `loop`
 
@@ -74,7 +237,7 @@ Acceptance: a `CaptureRecord` round-trips through a SwiftData store created
 in a temporary directory. The spool directory resolves inside the App Group
 container. Every model is `Sendable` or explicitly documented as not.
 
-### 3. Wire encoding
+#### 3. Wire encoding — ✅ done
 
 `feat` | `loop`
 
@@ -100,11 +263,9 @@ including boundary handling and part ordering. Encoding the same
 only `lat` set produces neither field. Round-trip a decoded body back through
 a parser fixture and confirm every field arrives.
 
----
+### Transport and queue
 
-## Transport and queue
-
-### 4. `BrainClient` request construction and error mapping
+#### 4. `BrainClient` request construction and error mapping — ✅ done
 
 `feat` | `loop`
 
@@ -123,7 +284,7 @@ client produces the right typed error and the right retry classification for
 each. Base URLs with and without a trailing slash produce identical request
 URLs.
 
-### 5. `CaptureQueue`
+#### 5. `CaptureQueue` — ✅ done
 
 `feat` | `loop`
 
@@ -139,18 +300,21 @@ SPEC sections 8.1, 8.3, 8.5.
   failing it; successful re-auth revives them.
 - Succeeded records keep `experience_id`, delete their spool file, prune
   after 7 days.
+- A late or duplicate failure never resurrects a delivered, terminal, or
+  parked record (SPEC 8.2 double-delivery).
 
 Acceptance: state transitions asserted for each error class from item 4.
 Backoff bounds asserted across many samples with a seeded generator.
 Simulated mid-flight termination leaves a recoverable record. Parked records
 are never retried while parked and all revive on re-auth.
 
-### 6. Background upload transport
+#### 6. Background upload transport
 
 `feat` | `loop` for the logic, `device` for the real handoff
 
-SPEC section 8.2. This is the piece that makes an extension capture reach the
-server with the app never opened, and it is load-bearing for Decision 9.
+Slice 5. SPEC section 8.2. This is the piece that makes an extension capture
+reach the server with the app never opened, and it is load-bearing for
+Decision 9.
 
 - `URLSessionConfiguration.background(withIdentifier:)` with
   `sharedContainerIdentifier` set to the App Group.
@@ -169,11 +333,9 @@ already marked succeeded (both must be no-ops, not crashes). Acceptance
 (`device`): a capture submitted from a process that then terminates still
 completes.
 
----
+### Authentication
 
-## Authentication
-
-### 7. Keychain token store
+#### 7. Keychain token store — ✅ done
 
 `feat` | `loop`
 
@@ -191,11 +353,12 @@ Acceptance: write/read/delete round-trip. The read-only accessor exposes no
 mutation and no refresh entry point. Attribute flags asserted on the stored
 item.
 
-### 8. `AuthManager`: DCR, PKCE, refresh
+#### 8. `AuthManager`: DCR, PKCE, refresh
 
 `feat` | `loop`
 
-SPEC sections 5.1, 5.3, 5.4. Everything except the interactive web sheet.
+Slice 1. SPEC sections 5.1, 5.3, 5.4. Everything except the interactive web
+sheet.
 
 - Dynamic Client Registration against `/oauth/register`, persisting
   `client_id`.
@@ -212,11 +375,12 @@ extension token path issues **zero** calls to the token endpoint however
 stale the token is; assert the call count, since this is the property that
 prevents the family-revocation sign-out described in SPEC 5.4.
 
-### 9. Discovery and reachability
+#### 9. Discovery and reachability
 
 `feat` | `loop` plus `server` for the probe
 
-SPEC section 6.1 and Decision 6.
+Slice 1 needs the URL-entry + `/healthz` subset; QR is Slice 7. SPEC section
+6.1 and Decision 6.
 
 - Manual base URL entry with normalization (scheme defaulting, trailing
   slash, whitespace).
@@ -229,11 +393,11 @@ behavior asserted against scripted responses including a `200` that is not
 `ok`. Against the live dev stack, a correct URL probes reachable and a wrong
 one fails within the timeout.
 
-### 10. Interactive OAuth flow
+#### 10. Interactive OAuth flow
 
-`feat` | `sim` | **blocked on server PR**
+`feat` | `sim`
 
-SPEC section 5.2. This is the only Phase 1 item hard-blocked on a merge.
+Slice 1. SPEC section 5.2.
 
 - `ASWebAuthenticationSession` with
   `Callback.customScheme("net.cotellese.mindgrapes")`.
@@ -241,21 +405,17 @@ SPEC section 5.2. This is the only Phase 1 item hard-blocked on a merge.
 - Registers `net.cotellese.mindgrapes:/oauth-callback` via DCR.
 - Cancel, error, and re-auth paths.
 
-Blocked on: server issue `Accept RFC 8252 private-use scheme redirect URIs in
-Dynamic Client Registration`. Until it merges, the loopback redirect
-(`http://127.0.0.1:<port>/callback`) already passes the server's validator
-and can serve as a bridge, at the cost of an ephemeral local listener. Do not
-build the bridge unless the merge actually lags; it is throwaway code.
+Server dependency: private-use scheme redirect URIs in DCR. ✅ `mindgrapes-server`
+PR #45 is **merged**, so this is unblocked and the loopback bridge
+(`http://127.0.0.1:<port>/callback`) is not needed.
 
 Acceptance: against the dev stack, a fresh install completes DCR, PKCE, and
 consent, and `OAuthClient` shows the registration server-side. Cancelling
 mid-sheet leaves no partial state and is retryable.
 
----
+### Capture pipeline
 
-## Capture pipeline
-
-### 11. Photo downscale
+#### 11. Photo downscale — ✅ done
 
 `feat` | `loop`
 
@@ -271,9 +431,11 @@ Acceptance: fixture images across orientations, aspect ratios, and formats
 An image already under 1024px is not upscaled. Output byte length is under
 the ceiling for every fixture.
 
-### 12. OCR seam
+#### 12. OCR seam
 
 `feat` | `loop` for the seam, `sim` for the Vision implementation
+
+Slice 6.
 
 - `TextRecognizing` protocol plus a Vision `RecognizeDocumentsRequest`
   implementation.
@@ -283,11 +445,11 @@ Acceptance: pipeline code tested entirely against the fake. The real
 implementation is checked against two or three reference images on
 simulator, asserting that known strings appear, not exact full output.
 
-### 13. Description generation and the degraded path
+#### 13. Description generation and the degraded path
 
 `feat` | `loop` for the seam, `device` for the model
 
-SPEC sections 7.2 and 7.3. This is the dog-food-label use case: the on-device
+Slice 6. SPEC sections 7.2 and 7.3. The dog-food-label use case: the on-device
 model turns OCR plus context into a standalone statement.
 
 - `DescriptionGenerating` protocol plus a Foundation Models implementation
@@ -302,11 +464,11 @@ reports unavailable. The real model is not unit-tested; it is
 nondeterministic. Acceptance (`device`): a photo of a product label produces
 a description naming the product.
 
-### 14. `LocationProvider`
+#### 14. `LocationProvider`
 
 `feat` | `loop` for the logic, `sim` for `CoreLocation`
 
-SPEC section 9.
+Slice 3. SPEC section 9.
 
 - One-shot `requestLocation()` at `kCLLocationAccuracyHundredMeters`, When In
   Use only.
@@ -319,15 +481,13 @@ Geocode failure yields coordinates without a label rather than dropping
 location. Location never delays a capture past the budget, asserted with a
 clock.
 
----
+### Intents and app
 
-## Intents and app
-
-### 15. Capture intents
+#### 15. Capture intents
 
 `feat` | `loop` plus `sim`
 
-SPEC sections 4.1 and 7.1.
+Slice 4. SPEC sections 4.1 and 7.1.
 
 - `CaptureNoteIntent`, `CapturePhotoIntent`, `OpenCaptureIntent`.
 - Validate, run the pipeline, enqueue, attempt the first upload with a 10
@@ -340,11 +500,11 @@ Acceptance: `perform()` called directly with injected dependencies asserts
 each outcome. An intent with the network down still returns success and
 leaves a durable record.
 
-### 16. Onboarding
+#### 16. Onboarding
 
 `feat` | `sim`
 
-Decision 6 and SPEC 5.1.
+Slice 7. Decision 6 and SPEC 5.1.
 
 - QR scan of the server base URL, with manual entry as the documented
   fallback.
@@ -356,11 +516,12 @@ Acceptance: a fresh install reaches an authenticated, capture-ready state
 from a QR scan alone. Manual entry reaches the same state. A bad URL fails
 with a clear message and is recoverable without restarting the app.
 
-### 17. Capture screen
+#### 17. Capture screen
 
 `feat` | `sim`
 
-SPEC 10.1.
+Slice 1 needs a one-field rough version; the full screen is Slice 7. SPEC
+10.1.
 
 - Single screen: text field focused on launch, dictation, camera button,
   photo picker.
@@ -370,9 +531,11 @@ SPEC 10.1.
 Acceptance: launch to keyboard-ready with the field focused. Each capture
 mode produces a queue record. UI never blocks on the network.
 
-### 18. Settings and queue status
+#### 18. Settings and queue status
 
 `feat` | `sim`
+
+Slice 7 for the full screen; Slice 1 needs the URL + sign-in-again subset.
 
 - Server URL, connected status, location toggle, sign out.
 - Recent captures with sync state, sourced from the queue.
@@ -383,15 +546,13 @@ mode produces a queue record. UI never blocks on the network.
 Acceptance: revoking the client server-side puts the app in auth-required
 state on next drain, queued captures survive, and re-auth drains them.
 
----
+### Verification
 
-## Verification
-
-### 19. Integration suite against the dev stack
+#### 19. Integration suite against the dev stack
 
 `test` | `server`
 
-SPEC 13.2.
+Slice 7. SPEC 13.2.
 
 - Provision a real bearer token out of band via the server's
   `sign_access_token` management path, which avoids automating passkeys.
@@ -403,11 +564,11 @@ SPEC 13.2.
 Acceptance: suite runs green against `make dev-up` and fails loudly if the
 wire format drifts.
 
-### 20. End-to-end
+#### 20. End-to-end
 
 `test` | `sim`
 
-SPEC 13.3.
+Slice 7. SPEC 13.3.
 
 - XCUITest with a launch argument injecting a minted token and the dev-server
   base URL, bypassing the web sheet.
@@ -417,17 +578,16 @@ SPEC 13.3.
 Acceptance: green on simulator, and the offline path demonstrably queues and
 drains.
 
-### 21. Phase 1 success-condition run
+#### 21. Phase 1 success-condition run
 
 `chore` | `device` plus `server`
 
-Execute the eight success conditions in SPEC section 12 against a real device
-and a real dev stack, and record the results. Several cannot be automated
-honestly: the passkey ceremony, real Apple Intelligence availability, real
-background scheduling.
+Slice 7, the gate. Execute the eight success conditions in SPEC section 12
+against a real device and a real dev stack, and record the results. Several
+cannot be automated honestly: the passkey ceremony, real Apple Intelligence
+availability, real background scheduling.
 
-This is the gate. Phase 1 is not done when the code compiles; it is done when
-these pass:
+Phase 1 is not done when the code compiles; it is done when these pass:
 
 1. Fresh install onboards via QR, completing DCR, PKCE, and consent.
 2. Text capture lands a row with `metadata.source = "app"`, correct
@@ -447,71 +607,35 @@ these pass:
 8. On a device without Apple Intelligence, photo capture still succeeds with
    the template description and OCR attached.
 
----
+### Added after the first five items
 
-## What can be looped
-
-Items 2 through 9, 11, and 13 through 15 are `loop`-verifiable, which is most
-of the actual logic: encoding, error mapping, the queue state machine,
-backoff, the auth state machine, downscaling, the degraded description path,
-and intent behavior. That is a large unattended run with `swift test` as the
-signal, and none of it waits on a server merge.
-
-What cannot be looped, and should not be attempted unattended: item 10 (the
-interactive OAuth sheet), the real Vision and Foundation Models
-implementations in items 12 and 13, everything in the app and onboarding
-group, and all of item 21.
-
-## Server dependencies for Phase 1
-
-From SPEC section 14:
-
-1. Private-use scheme redirect URIs in DCR. **Blocks item 10.** Written and
-   tested; `mindgrapes-server` PR #45 is open and unmerged.
-2. `POST /capture/note`. **Not written.** Blocks text capture reaching the
-   server, though items 3 through 5 can be built and tested against the
-   documented contract before it lands.
-3. `idempotency_key` on both capture doors. Not written. Not blocking: Phase
-   1 ships with the conservative retry set (retry only on network failure and
-   `502`) if this lags, and unlocks aggressive retry when it merges.
-4. QR on `/connect`. Not written. Not blocking: manual entry is the
-   documented fallback.
-5. **`POST /capture/image` is not on the server's `main`.** The whole
-   attachments feature lives on the unmerged `feature/42-43-attachments-geo`
-   branch, four commits ahead, with no PR open. SPEC section 6.3 documents
-   that endpoint from that branch. Nothing in items 3, 11, 12, or 13 is
-   blocked, since the contract is known and was verified against the branch
-   source, but item 19 (integration) and Phase 1 success condition 3 cannot
-   pass until it merges. This is the largest server dependency.
-
----
-
-## Added after the first five items
-
-### 22. Continuous integration
+#### 22. Continuous integration
 
 `chore` | `loop`
 
-Nothing currently enforces the test suite. Every green result through item
-11 came from running `make test` by hand. A PR with a failing suite would
-merge without complaint.
+Fits before Slice 2. Nothing currently enforces the test suite; every green
+result so far came from running `make test` by hand, and a PR with a failing
+suite would merge without complaint. (History note: a GitHub Actions gate was
+tried, then replaced with a local pre-push hook, which itself hit a
+`SwiftDataMacros` plugin-not-found flake under the git-hook environment and was
+disabled. Root cause is still open; see the queue-work session notes.)
 
-- GitHub Actions workflow on every PR and on `main`: `make test`, plus the
-  package built for `generic/platform=iOS` and `generic/platform=watchOS`,
-  plus the app built for a simulator.
-- Fix `make build-kit` while here: its two `xcodebuild` lines each `cd`
-  in a separate subshell, so only the first runs from the package
-  directory. Both platforms do build; the target just reports one success
-  where it should report three.
-- Run the suite more than once per job, or add a repeat target. The
-  `ModelContainer` segfault (SPEC 4.3) was a 1-in-10 failure and a
-  single-run job would have shipped it.
+- A CI path on every PR and on `main`: `make test`, plus the package built for
+  `generic/platform=iOS` and `generic/platform=watchOS`, plus the app built
+  for a simulator.
+- Fix `make build-kit` while here: its two `xcodebuild` lines each `cd` in a
+  separate subshell, so only the first runs from the package directory. Both
+  platforms do build; the target reports one success where it should report
+  three.
+- Run the suite more than once per job (or use the `test-repeat` target). The
+  `ModelContainer` segfault (SPEC 4.3) was a 1-in-10 failure a single-run job
+  would have shipped.
 
-Acceptance: a PR with a deliberately failing test cannot be merged. A PR
-that breaks the watchOS build fails the job. Both verified by pushing a
-throwaway branch.
+Acceptance: a PR with a deliberately failing test cannot be merged. A PR that
+breaks the watchOS build fails the job. Both verified by pushing a throwaway
+branch.
 
-### 23. App-hosted test target for entitlement-gated code
+#### 23. App-hosted test target for entitlement-gated code
 
 `chore` | `sim`
 
@@ -535,3 +659,28 @@ container resolution needs the entitlement too.
 Acceptance: the Keychain round trip passes against a real Keychain, and a
 regression on `kSecAttrAccessible` fails it rather than only failing the
 dictionary assertion.
+
+---
+
+## Server dependencies for Phase 1
+
+From SPEC section 14. Verified against the live `mindgrapes-server` repo on
+2026-07-24.
+
+1. **`POST /capture/note`. Not written. The one remaining Slice 1 blocker.**
+   Tracked as `mindgrapes-server` #53 (`effort/S`). Text capture cannot reach
+   the server until this exists; items 3–5 were built and tested against the
+   documented contract, so only the endpoint itself is missing. `/capture`
+   exists but is extension-only (requires a URL, summarizes), so it is no
+   substitute.
+2. ✅ **Private-use scheme redirect URIs in DCR. Merged** (`mindgrapes-server`
+   PR #45). #10 / Slice 1 sign-in is unblocked; the loopback bridge is not
+   needed.
+3. ✅ **`POST /capture/image` is merged to server `main`** (PR #52, attachments
+   images v1). Slice 2, item 19, and success condition 3 are no longer gated on
+   it.
+4. `idempotency_key` on both capture doors. Not written. Not blocking: ship the
+   conservative retry set (retry only on network failure and `502`) and send the
+   key field anyway; it unlocks aggressive retry when honored.
+5. QR on `/connect`. Not written. Not blocking: manual entry is the documented
+   fallback (Slice 1 uses it; Slice 7 adds QR).
