@@ -18,6 +18,8 @@ class StubURLProtocolBase: URLProtocol {
     typealias Handler = @Sendable (URLRequest) -> Result<(HTTPURLResponse, Data), URLError>
 
     nonisolated(unsafe) private static var handlers: [ObjectIdentifier: Handler] = [:]
+    /// Channels told to never answer, so a test can drive an upload budget/timeout.
+    nonisolated(unsafe) private static var hangingChannels: Set<ObjectIdentifier> = []
     private static let lock = NSLock()
 
     /// A session that routes through this protocol and caches nothing, so one
@@ -55,9 +57,19 @@ class StubURLProtocolBase: URLProtocol {
         install { _ in .failure(URLError(code)) }
     }
 
+    /// Makes every request on this channel hang until its task is cancelled, so a
+    /// test can prove an upload budget frees the caller without a real delay.
+    static func installHang() {
+        let channel = ObjectIdentifier(self)
+        lock.withLock { _ = Self.hangingChannels.insert(channel) }
+    }
+
     static func reset() {
         let channel = ObjectIdentifier(self)
-        lock.withLock { Self.handlers[channel] = nil }
+        lock.withLock {
+            Self.handlers[channel] = nil
+            Self.hangingChannels.remove(channel)
+        }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -66,6 +78,9 @@ class StubURLProtocolBase: URLProtocol {
 
     override func startLoading() {
         let channel = ObjectIdentifier(type(of: self))
+        // A hanging channel never calls back; URLSession cancellation (from the
+        // caller's task being cancelled) is what ends the request.
+        if Self.lock.withLock({ Self.hangingChannels.contains(channel) }) { return }
         guard let handler = Self.lock.withLock({ Self.handlers[channel] }) else {
             // A test that forgot to install one should fail loudly rather than
             // hang or silently succeed.
@@ -104,3 +119,7 @@ final class SignInStubURLProtocol: StubURLProtocolBase {}
 /// A separate channel for `CaptureDrainerTests`, so its `/capture/note` and
 /// `/capture/image` scripting does not race the `BrainClient` suite.
 final class CaptureDrainerStubURLProtocol: StubURLProtocolBase {}
+
+/// A separate channel for `CaptureIntentRunnerTests`, so its capture scripting
+/// and hang cases do not race the other capture suites.
+final class CaptureRunnerStubURLProtocol: StubURLProtocolBase {}

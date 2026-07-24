@@ -1,25 +1,25 @@
-// ABOUTME: A rough capture screen wired end to end: type a note or pick/shoot a photo, watch it reach a real experience_id.
+// ABOUTME: A rough capture screen: type a note or pick/shoot a photo, sent through the same runner Siri uses.
 // ABOUTME: ponytail: throwaway Slice-1/2 HITL screen; the real capture UI (issue 17) replaces it.
 
 import MindGrapesKit
 import OSLog
 import PhotosUI
-import SwiftData
 import SwiftUI
 
 private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "capture")
 
-/// Types a note, taps Save, and watches the drain loop carry it to a real
-/// `experience_id`. Builds its own composition from the base URL the sign-in
-/// screen persisted, so there is no object graph to thread through the app.
+/// Types a note or adds a photo and watches it reach a real `experience_id`.
+///
+/// The screen owns no pipeline of its own: it builds the shared ``AppComposition``
+/// and drives ``CaptureIntentRunner`` — the exact path the capture App Intents
+/// take — so "every entry point runs the same code" (SPEC 4.1) is true rather
+/// than aspirational. The screen adds only what is UI: the location toggle and a
+/// status line.
 struct CaptureView: View {
-    let baseURL: URL
-
     @State private var text = ""
     @State private var status = "Preparing…"
-    @State private var queue: CaptureQueue?
+    @State private var runner: CaptureIntentRunner?
     @State private var drainer: CaptureDrainer?
-    @State private var appGroup: AppGroupContainer?
     @State private var photoItem: PhotosPickerItem?
     @State private var showCamera = false
     @State private var includeLocation = true
@@ -37,7 +37,7 @@ struct CaptureView: View {
 
             Button("Save", action: save)
                 .buttonStyle(.borderedProminent)
-                .disabled(busy || drainer == nil || NoteDraft(content: text) == nil)
+                .disabled(busy || runner == nil || NoteDraft(content: text) == nil)
 
             HStack(spacing: 12) {
                 // No photoLibrary: argument, so this is the out-of-process picker
@@ -55,7 +55,7 @@ struct CaptureView: View {
                     }
                 }
             }
-            .disabled(busy || drainer == nil)
+            .disabled(busy || runner == nil)
 
             Toggle("Include location", isOn: $includeLocation)
                 .onChange(of: includeLocation) { _, on in
@@ -102,61 +102,44 @@ struct CaptureView: View {
         }
     }
 
-    /// Stands up the queue, auth, and transport for this server. Discovery is one
-    /// GET; the sign-in the user just completed left the tokens in the keychain.
+    /// Builds the shared composition. No network here: discovery is deferred into
+    /// the drainer's token closure, so a launch offline still stands the screen up.
     private func prepare() async {
         do {
-            let appGroup = try AppGroupContainer()
-            try appGroup.prepareDirectories()
-            let container = try ModelContainer(
-                for: CaptureRecord.self,
-                configurations: ModelConfiguration(url: appGroup.storeURL)
-            )
-            let queue = CaptureQueue(container: container, appGroup: appGroup)
-
-            let metadata = try await AuthManager.discoverMetadata(baseURL: baseURL, session: .shared)
-            // ponytail: accessGroup nil, matching #10's -34018 fix. Slice 1 is a
-            // single process; the shared group returns with the extension (Slice 5).
-            let auth = AuthManager(session: .shared, store: TokenStore(accessGroup: nil), metadata: metadata)
-            let client = BrainClient(config: ServerConfig(baseURL: baseURL), session: .shared)
-
-            self.queue = queue
-            self.appGroup = appGroup
+            let composition = try AppComposition.make()
+            self.runner = composition.runner
+            self.drainer = composition.drainer
             self.includeLocation = SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation ?? true
-            self.drainer = CaptureDrainer(queue: queue, client: client) {
-                try await auth.validAccessToken()
-            }
             status = "Ready. Type a note, or add a photo."
-            // Flush anything a prior session left queued: drainOnce reclaims
-            // interrupted records, and .onChange does not fire for the initial
-            // .active, so this is the launch drain.
+            // Flush anything a prior session left queued: .onChange does not fire
+            // for the initial .active, so this is the launch drain.
             await drain()
         } catch {
             log.error("prepare failed: \(String(describing: error), privacy: .public)")
-            status = "Setup failed: \(error)"
+            status = "Sign in first, then reopen capture."
         }
     }
 
     private func save() {
-        guard NoteDraft(content: text) != nil, let queue, let drainer else { return }
+        guard NoteDraft(content: text) != nil, let runner else { return }
         let content = text
         busy = true
         Task {
-            do {
-                let fix = await locationFix()
-                guard let draft = NoteDraft(
-                    content: content, coordinate: fix?.coordinate, placeLabel: fix?.placeLabel
-                ) else { busy = false; return }
-                let enqueued = try await queue.enqueue(note: draft)
-                text = ""
-                status = "Sending…"
-                try await drainer.drainOnce()
-                let final = try await queue.snapshot(id: enqueued.id)
-                status = final.map(describe) ?? "Saved."
-            } catch {
-                log.error("save failed: \(String(describing: error), privacy: .public)")
-                status = "Could not save: \(error)"
-            }
+            let fix = await locationFix()
+            let outcome = await runner.captureNote(content, location: fix)
+            if case .rejected = outcome {} else { text = "" }
+            status = describe(outcome)
+            busy = false
+        }
+    }
+
+    private func savePhoto(_ data: Data) {
+        guard let runner else { return }
+        busy = true
+        Task {
+            let fix = await locationFix()
+            let outcome = await runner.capturePhoto(data, location: fix)
+            status = describe(outcome)
             busy = false
         }
     }
@@ -178,62 +161,27 @@ struct CaptureView: View {
         return fix
     }
 
-    /// Spools the picked or shot image, enqueues a photo capture, and drains it.
-    ///
-    /// The description is always the timestamp template, deliberately not the note
-    /// field: sharing that field would silently consume a note the user meant to
-    /// Save as its own capture. Typed photo captions belong to the real capture UI
-    /// (issue 17); Slice 2 only proves the photo pipeline reaches the server.
-    private func savePhoto(_ data: Data) {
-        guard let queue, let drainer, let appGroup else { return }
-        busy = true
-        Task {
-            do {
-                let filename = try PhotoSpooler.spool(data, into: appGroup)
-                let description = PhotoDescription.template(occurredAt: Date())
-                let fix = await locationFix()
-                guard let draft = PhotoDraft(
-                    imageFilename: filename, description: description,
-                    coordinate: fix?.coordinate, placeLabel: fix?.placeLabel
-                ) else {
-                    status = "Could not prepare that photo."
-                    busy = false
-                    return
-                }
-                let enqueued = try await queue.enqueue(photo: draft)
-                status = "Sending photo…"
-                try await drainer.drainOnce()
-                let final = try await queue.snapshot(id: enqueued.id)
-                status = final.map(describe) ?? "Saved."
-            } catch {
-                log.error("save photo failed: \(String(describing: error), privacy: .public)")
-                status = "Could not save photo: \(error)"
-            }
-            busy = false
-        }
-    }
-
+    /// A foreground flush of anything queued. Not a capture, so it uses the
+    /// drainer directly rather than the runner.
     private func drain() async {
         guard let drainer, !busy else { return }
         busy = true
         defer { busy = false }
         do {
             let snapshots = try await drainer.drainOnce()
-            // claimDue returns oldest-first, so the newest capture is last.
-            if let latest = snapshots.last { status = describe(latest) }
+            if let latest = snapshots.last {
+                status = latest.state == .succeeded ? "Synced ✓" : "Some captures are still pending."
+            }
         } catch {
             log.error("drain failed: \(String(describing: error), privacy: .public)")
-            status = "Send failed: \(error)"
         }
     }
 
-    private func describe(_ snapshot: CaptureSnapshot) -> String {
-        switch snapshot.state {
-        case .succeeded: "Saved ✓ experience \(snapshot.experienceID ?? "?")"
-        case .pending: "Queued, will retry (\(snapshot.lastErrorCode ?? "pending"))."
-        case .inFlight: "Sending…"
-        case .failed: "Failed: \(snapshot.lastErrorCode ?? "error")."
-        case .authRequired: "Session expired. Sign in again."
+    private func describe(_ outcome: CaptureOutcome) -> String {
+        switch outcome {
+        case .confirmed(let experienceID): "Saved ✓ experience \(experienceID)"
+        case .queued: "Saved. It'll sync when you're online."
+        case .rejected(let reason): reason == "empty" ? "Nothing to save." : "Could not save that (\(reason))."
         }
     }
 }

@@ -14,7 +14,6 @@ struct SignInView: View {
     @State private var urlText = "https://openbrain-mcp.perch-iwato.ts.net"
     @State private var status = "Enter your Mind Grapes server URL."
     @State private var busy = false
-    @State private var signedInBase: URL?
     @State private var showCapture = false
 
     var body: some View {
@@ -43,7 +42,9 @@ struct SignInView: View {
         }
         .padding()
         .navigationDestination(isPresented: $showCapture) {
-            if let signedInBase { CaptureView(baseURL: signedInBase) }
+            // CaptureView reads the persisted server config through AppComposition,
+            // so it needs no base URL threaded in.
+            CaptureView()
         }
     }
 
@@ -96,7 +97,6 @@ struct SignInView: View {
                 // extension) target the same host without re-asking (SPEC 4.2).
                 SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig = ServerConfig(baseURL: base)
                 status = "Signed in ✓"
-                signedInBase = base
                 showCapture = true
             } catch AuthError.signInCancelled {
                 log.debug("signIn: cancelled")
