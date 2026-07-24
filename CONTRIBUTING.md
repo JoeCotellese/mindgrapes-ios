@@ -22,6 +22,33 @@ The `.xcodeproj` and `MindGrapes/Info.plist` are generated and gitignored.
 Edit `project.yml`, then `make generate`. Do not check the pbxproj in; it
 would become a merge-conflict surface and a second source of truth.
 
+Run `make hooks` once per clone. It points `core.hooksPath` at `.githooks`,
+whose `pre-push` hook runs the suite before anything leaves your machine.
+Nothing runs the suite server-side, so this hook is the gate; `git push
+--no-verify` bypasses it when you need to push a known-red WIP branch.
+
+## Releasing
+
+Building and running need no Apple account: `make build` targets the
+simulator with signing off. Shipping to the App Store is a separate,
+maintainer-only path, and every credential for it comes from the environment
+so nothing secret is committed.
+
+Copy `.env.example` to `.env` (gitignored) and fill in an App Store Connect
+API key (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_PATH`) plus your
+`DEVELOPMENT_TEAM`. Then:
+
+```sh
+set -a; . ./.env; set +a   # load the secrets into this shell only
+make release-validate      # archive + App Store validation, no submission
+make release               # archive, export, and upload for real
+```
+
+Run `make release-validate` first: it catches almost everything an upload
+would reject without consuming a build number. The API key's `.p8` is copied
+into a private temp directory at run time and deleted on exit, never into the
+repo or your home folder.
+
 ## House rules
 
 - **TDD.** Failing test first, then the minimum code to pass.

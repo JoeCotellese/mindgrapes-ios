@@ -39,6 +39,14 @@ build: generate ## Build the app for the simulator
 		-destination '$(SIMULATOR)' \
 		CODE_SIGNING_ALLOWED=NO build
 
+.PHONY: release-validate
+release-validate: ## Archive and validate against App Store Connect (no submit; needs .env)
+	VALIDATE=1 ./scripts/appstore-upload.sh
+
+.PHONY: release
+release: ## Archive, export, and upload the app to App Store Connect (needs .env)
+	./scripts/appstore-upload.sh
+
 .PHONY: clean
 clean:
 	rm -rf .build MindGrapesKit/.build DerivedData MindGrapes.xcodeproj
