@@ -12,6 +12,8 @@ in under five seconds.
   weighed.
 - `docs/PHASE1-ISSUES.md` is the Phase 1 work breakdown, one item per branch,
   each with a verification mode.
+- `CONTRIBUTING.md` covers the build, the house rules, and the branching
+  workflow.
 
 ## Layout
 
