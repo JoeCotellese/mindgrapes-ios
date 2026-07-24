@@ -86,6 +86,11 @@ public struct CaptureDrainer: Sendable {
         // reclaims them next time.
 
         for snapshot in due {
+            // Stop cleanly if the pass was cancelled (an intent's upload budget
+            // elapsed). Records not yet attempted stay `inFlight` for the next
+            // pass's recoverInterrupted to reclaim, rather than each taking a
+            // cancelled-transport failure and a needless backoff bump.
+            if Task.isCancelled { break }
             switch snapshot.kind {
             case .note: try await sendNote(id: snapshot.id, token: token, now: now)
             case .photo: try await sendPhoto(id: snapshot.id, token: token, now: now)
