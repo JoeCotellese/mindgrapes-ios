@@ -14,6 +14,8 @@ struct SignInView: View {
     @State private var urlText = "https://openbrain-mcp.perch-iwato.ts.net"
     @State private var status = "Enter your Mind Grapes server URL."
     @State private var busy = false
+    @State private var signedInBase: URL?
+    @State private var showCapture = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -40,6 +42,9 @@ struct SignInView: View {
             Spacer()
         }
         .padding()
+        .navigationDestination(isPresented: $showCapture) {
+            if let signedInBase { CaptureView(baseURL: signedInBase) }
+        }
     }
 
     private func check() {
@@ -87,7 +92,12 @@ struct SignInView: View {
                 try await InteractiveSignIn(auth: auth, web: WebAuthenticationSession()).run()
 
                 log.debug("signIn: success")
+                // Persist the chosen server so the capture screen (and a future
+                // extension) target the same host without re-asking (SPEC 4.2).
+                SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig = ServerConfig(baseURL: base)
                 status = "Signed in ✓"
+                signedInBase = base
+                showCapture = true
             } catch AuthError.signInCancelled {
                 log.debug("signIn: cancelled")
                 status = "Sign in cancelled."
