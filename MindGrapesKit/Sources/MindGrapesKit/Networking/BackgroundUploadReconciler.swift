@@ -86,12 +86,23 @@ public struct BackgroundUploadReconciler: Sendable {
         }
 
         switch snapshot.state {
-        case .succeeded, .failed, .authRequired:
+        case .succeeded, .failed:
+            // Terminal. A late or duplicate completion never disturbs a delivered
+            // or terminally-failed record (SPEC 8.2).
             return .ignoredAlreadySettled
-        case .pending, .inFlight:
+        case .pending, .inFlight, .authRequired:
+            // `authRequired` falls through on purpose: a genuine delivery for a
+            // parked record must be recorded (markSucceeded allows it), or the
+            // capture is dropped and re-sent as a duplicate after re-auth. A
+            // *failure* for a parked record is absorbed harmlessly — markFailed's
+            // own guard no-ops it, leaving the record parked to resume later.
             break
         }
 
+        // A transport failure is checked before the status: a task that got a
+        // status line and then dropped mid-body cannot be trusted to have
+        // delivered, so retrying (and re-hitting the real status) is safer than
+        // honoring a header we only half-received.
         if let code = completion.transportErrorCode {
             let error = BrainClientError.transport(code)
             try await queue.markFailed(id: id, error: error, now: now)
@@ -100,10 +111,12 @@ public struct BackgroundUploadReconciler: Sendable {
 
         guard let status = completion.statusCode else {
             // A finished task with neither an HTTP response nor a transport error
-            // is not something the contract describes; treat it as a malformed
-            // answer (terminal) rather than guess it succeeded.
-            try await queue.markFailed(id: id, error: .malformedResponse, now: now)
-            return .failed(BrainClientError.malformedResponse.code)
+            // is an anomaly the contract does not describe. Retry it as a
+            // transient transport fault rather than terminally dropping a capture
+            // over an ambiguous completion — losing data is the worse failure.
+            let error = BrainClientError.transport(.unknown)
+            try await queue.markFailed(id: id, error: error, now: now)
+            return .failed(error.code)
         }
 
         if let error = BrainClient.error(forStatus: status) {
@@ -124,7 +137,16 @@ public struct BackgroundUploadReconciler: Sendable {
     }
 
     /// Both capture doors answer with `experience_id`; the image door adds more,
-    /// but reconciliation needs only the id. One envelope decodes either.
+    /// but reconciliation stores only the id (the queue keeps nothing else from
+    /// the response), so one lenient envelope decodes either.
+    ///
+    /// This is deliberately more forgiving than ``BrainClient``'s full
+    /// `ImageCaptureResponse`, which also requires `attachment_id`, `object_key`,
+    /// and `byte_len`: an image success body missing those would fail the
+    /// in-process path but pass here. The two paths still agree on every *status*
+    /// classification (that is what ``BrainClient/error(forStatus:)`` guarantees);
+    /// they differ only in how strict the success body must be, and since the
+    /// stored outcome is the id alone, the leniency costs nothing.
     private struct ExperienceEnvelope: Decodable {
         let experienceID: String
         enum CodingKeys: String, CodingKey { case experienceID = "experience_id" }

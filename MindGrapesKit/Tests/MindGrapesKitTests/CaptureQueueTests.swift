@@ -149,6 +149,39 @@ struct CaptureQueueTests {
         #expect(reloaded.lastErrorCode == nil)
     }
 
+    @Test func aLateSuccessDoesNotResurrectATerminallyFailedRecord() async throws {
+        // SPEC 8.2 in the other direction: a terminal failure lands, then a stray
+        // background success for the same record arrives. The record must stay
+        // failed rather than flip to succeeded (the guard markSucceeded gained to
+        // match markFailed/markUnsendable).
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let snapshot = try await queue.enqueue(note: note())
+        _ = try await queue.claimDue()
+
+        try await queue.markFailed(id: snapshot.id, error: .badRequest)
+        try await queue.markSucceeded(id: snapshot.id, experienceID: "late")
+
+        let reloaded = try #require(try await queue.snapshot(id: snapshot.id))
+        #expect(reloaded.state == .failed)
+        #expect(reloaded.experienceID == nil)
+    }
+
+    @Test func aSecondSuccessDoesNotOverwriteTheDeliveredExperienceID() async throws {
+        // Two background tasks for one record both complete 200 with different ids;
+        // first writer wins so the stored experience_id does not flip.
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let snapshot = try await queue.enqueue(note: note())
+        _ = try await queue.claimDue()
+
+        try await queue.markSucceeded(id: snapshot.id, experienceID: "first")
+        try await queue.markSucceeded(id: snapshot.id, experienceID: "second")
+
+        let reloaded = try #require(try await queue.snapshot(id: snapshot.id))
+        #expect(reloaded.experienceID == "first")
+    }
+
     @Test func aLateFailureDoesNotUnparkAnAuthRequiredRecord() async throws {
         // SPEC 8.5: parked records are not retried. A record's own late transport
         // failure must not pull it out of authRequired back to pending.

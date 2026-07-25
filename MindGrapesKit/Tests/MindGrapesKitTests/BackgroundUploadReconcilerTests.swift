@@ -271,7 +271,7 @@ struct BackgroundUploadReconcilerTests {
         #expect(snapshot.state == .failed)
     }
 
-    @Test func aFinishedTaskWithNoResponseAndNoErrorIsMalformed() async throws {
+    @Test func aFinishedTaskWithNoResponseAndNoErrorRetriesRatherThanLosingTheCapture() async throws {
         let fixture = try Fixture()
         let queue = fixture.makeQueue()
         let reconciler = BackgroundUploadReconciler(queue: queue)
@@ -283,8 +283,118 @@ struct BackgroundUploadReconcilerTests {
             now: now
         )
 
-        #expect(outcome == .failed("malformed_response"))
+        // An ambiguous completion (no response, no error) must not terminally drop
+        // a durable capture; it retries as a transient transport fault.
+        #expect(outcome == .failed("transport(\(URLError.Code.unknown.rawValue))"))
+        let snapshot = try #require(try await queue.snapshot(id: id))
+        #expect(snapshot.state == .pending)
+        #expect(snapshot.attemptCount == 1)
+    }
+
+    @Test func aServerErrorStatusOutsideTheDocumentedSetRetries() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let reconciler = BackgroundUploadReconciler(queue: queue)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let id = try await inFlightNote(queue, now: now)
+
+        let outcome = try await reconciler.reconcile(
+            UploadCompletion(taskDescription: id.uuidString, statusCode: 503),
+            now: now
+        )
+
+        #expect(outcome == .failed("503"))
+        let snapshot = try #require(try await queue.snapshot(id: id))
+        #expect(snapshot.state == .pending)
+        #expect(snapshot.attemptCount == 1)
+    }
+
+    @Test func anUndocumentedClientStatusFailsTerminally() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let reconciler = BackgroundUploadReconciler(queue: queue)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let id = try await inFlightNote(queue, now: now)
+
+        let outcome = try await reconciler.reconcile(
+            UploadCompletion(taskDescription: id.uuidString, statusCode: 404),
+            now: now
+        )
+
+        #expect(outcome == .failed("404"))
         let snapshot = try #require(try await queue.snapshot(id: id))
         #expect(snapshot.state == .failed)
+    }
+
+    // MARK: - Records reset to pending by a crash reclaim (SPEC 8.2 cross-process)
+
+    @Test func aSuccessForARecordReclaimedToPendingStillDelivers() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let reconciler = BackgroundUploadReconciler(queue: queue)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let id = try await inFlightNote(queue, now: now)
+        // A crash reclaim (or this-process-didn't-submit) returns the record to
+        // pending; an old task's completion then arrives.
+        try await queue.recoverInterrupted(now: now)
+        #expect(try await queue.snapshot(id: id)?.state == .pending)
+
+        let outcome = try await reconciler.reconcile(
+            UploadCompletion(taskDescription: id.uuidString, statusCode: 200, responseBody: noteSuccessBody("exp_reclaimed")),
+            now: now
+        )
+
+        #expect(outcome == .succeeded("exp_reclaimed"))
+        #expect(try await queue.snapshot(id: id)?.state == .succeeded)
+    }
+
+    // MARK: - Parked (authRequired) records
+
+    /// Enqueues, claims, then parks the record the way a dead refresh on an
+    /// unrelated capture would (parkForAuth parks every pending/inFlight record).
+    private func parkedNote(_ queue: CaptureQueue, now: Date) async throws -> UUID {
+        let id = try await inFlightNote(queue, now: now)
+        try await queue.parkForAuth()
+        #expect(try await queue.snapshot(id: id)?.state == .authRequired)
+        return id
+    }
+
+    @Test func aGenuineSuccessForAParkedRecordIsRecordedNotDropped() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let reconciler = BackgroundUploadReconciler(queue: queue)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let id = try await parkedNote(queue, now: now)
+
+        // The upload actually landed before the queue was parked; recording it
+        // avoids a duplicate re-send after re-auth (the server cannot dedupe yet).
+        let outcome = try await reconciler.reconcile(
+            UploadCompletion(taskDescription: id.uuidString, statusCode: 200, responseBody: noteSuccessBody("exp_parked")),
+            now: now
+        )
+
+        #expect(outcome == .succeeded("exp_parked"))
+        let snapshot = try #require(try await queue.snapshot(id: id))
+        #expect(snapshot.state == .succeeded)
+        #expect(snapshot.experienceID == "exp_parked")
+    }
+
+    @Test func aFailureForAParkedRecordLeavesItParked() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let reconciler = BackgroundUploadReconciler(queue: queue)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let id = try await parkedNote(queue, now: now)
+
+        // A failure completion for a parked record must not un-park it or bump its
+        // backoff; it stays parked to resume after re-auth.
+        _ = try await reconciler.reconcile(
+            UploadCompletion(taskDescription: id.uuidString, statusCode: 502),
+            now: now
+        )
+
+        let snapshot = try #require(try await queue.snapshot(id: id))
+        #expect(snapshot.state == .authRequired)
+        #expect(snapshot.attemptCount == 0)
     }
 }

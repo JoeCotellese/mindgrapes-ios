@@ -101,10 +101,21 @@ public actor CaptureQueue {
     // MARK: - Outcomes
 
     /// Marks a record delivered: keep the `experience_id`, drop the spool file,
-    /// clear the last error (SPEC 8.1). No-op if the id is unknown, so a
-    /// duplicate completion for an already-reconciled record is safe (SPEC 8.2).
+    /// clear the last error (SPEC 8.1).
+    ///
+    /// Guarded symmetrically with ``markFailed(id:error:now:)`` and
+    /// ``markUnsendable(id:code:)`` (SPEC 8.2): a record already delivered or
+    /// terminally failed is never disturbed by a late, duplicate, or
+    /// cross-process completion, so two background tasks racing the same record
+    /// resolve first-writer-wins rather than flipping the stored `experience_id`,
+    /// and a stray success never resurrects a `.failed` record. A record still
+    /// parked in `.authRequired` *is* allowed through: a capture whose upload
+    /// actually landed before an unrelated refresh parked the queue is recorded
+    /// delivered instead of being dropped and re-sent (a duplicate the server
+    /// cannot yet dedupe). No-op if the id is unknown.
     public func markSucceeded(id: UUID, experienceID: String) throws {
         guard let record = try record(id: id) else { return }
+        guard record.state != .succeeded, record.state != .failed else { return }
         record.state = .succeeded
         record.experienceID = experienceID
         record.lastErrorCode = nil

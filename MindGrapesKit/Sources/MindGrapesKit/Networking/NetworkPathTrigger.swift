@@ -54,5 +54,11 @@ public final class NetworkPathTrigger: @unchecked Sendable {
 
     public func cancel() {
         monitor.cancel()
+        // Reset so a later start() rewatches instead of no-opping on the stale
+        // `started` flag.
+        lock.withLock {
+            started = false
+            wasSatisfied = false
+        }
     }
 }

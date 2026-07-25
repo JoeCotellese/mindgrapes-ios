@@ -14,9 +14,11 @@ import Foundation
 /// point.
 ///
 /// `@unchecked Sendable`: the delegate callbacks arrive on the session's own
-/// serial delegate queue, but `submit` can be called from anywhere, so the two
-/// pieces of mutable state (per-task response buffers and the stored system
-/// completion handler) are guarded by ``lock``.
+/// serial delegate queue, but `submit` can be called from anywhere. `session` is
+/// built once in `init` (before any other reference to `self` can exist) and
+/// never reassigned, so it needs no lock; the two genuinely mutable fields
+/// (per-task response buffers and the stored system completion handler) are
+/// guarded by ``lock``.
 public final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let reconciler: BackgroundUploadReconciler
     private let appGroup: AppGroupContainer
@@ -32,19 +34,12 @@ public final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchec
     /// knows the relaunch is done.
     private var backgroundCompletionHandler: (@Sendable () -> Void)?
 
-    private lazy var session: URLSession = {
-        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
-        configuration.sharedContainerIdentifier = appGroupIdentifier
-        // In-app captures should confirm without waiting for the OS to decide the
-        // upload is "discretionary"; the pocket case still works because a
-        // suspended app's tasks run in the background regardless.
-        configuration.isDiscretionary = false
-        configuration.sessionSendsLaunchEvents = true
-        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-    }()
-
-    private let identifier: String
-    private let appGroupIdentifier: String
+    /// Set once in `init` and never reassigned. Eager rather than lazy so two
+    /// concurrent first callers cannot race a non-atomic lazy init into
+    /// constructing two background sessions with the same identifier (a runtime
+    /// trap). Implicitly unwrapped because the session needs `self` as its
+    /// delegate, so it cannot be built until after `super.init`.
+    private var session: URLSession!
 
     /// - Parameters:
     ///   - reconciler: the tested decision core each finished task funnels into.
@@ -61,16 +56,17 @@ public final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchec
     ) {
         self.reconciler = reconciler
         self.appGroup = appGroup
-        self.identifier = identifier
-        self.appGroupIdentifier = appGroupIdentifier
+        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
+        configuration.sharedContainerIdentifier = appGroupIdentifier
+        // In-app captures should confirm without waiting for the OS to decide the
+        // upload is "discretionary"; the pocket case still works because a
+        // suspended app's tasks run in the background regardless.
+        configuration.isDiscretionary = false
+        configuration.sessionSendsLaunchEvents = true
         super.init()
-    }
-
-    /// Materializes the background session. Call at launch so a relaunch triggered
-    /// by `handleEventsForBackgroundURLSession` reattaches and drains the
-    /// completions the OS is holding, rather than only on the first `submit`.
-    public func activate() {
-        _ = session
+        // Built here (not in a stored-property initializer) because the session
+        // needs `self` as its delegate, which is only available after super.init.
+        session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }
 
     /// Uploads `fileURL`'s bytes for `recordID` on the background session.
@@ -114,9 +110,11 @@ public final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchec
             // through it. A retry or auth-hold keeps the record `pending`, and the
             // next submit rewrites this same file; deleting it here would strand
             // that resend with no body.
-            // ponytail: a terminally-failed record's body file lingers (small, one
-            // per dead capture) until a sweep clears it; add the sweep to prune()
-            // if it ever matters.
+            // ponytail: a terminally-failed record's body file is NOT reclaimed —
+            // prune() sweeps only the photo spool, not the request-body spool — so
+            // it leaks one small file per dead capture. Zero impact today (nothing
+            // writes these files until the submit switchover). When that lands, add
+            // a requestBodySpool sweep to CaptureQueue.prune keyed on the record id.
             switch outcome {
             case .succeeded, .ignoredAlreadySettled:
                 if let bodyFileURL { try? FileManager.default.removeItem(at: bodyFileURL) }
