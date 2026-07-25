@@ -34,6 +34,18 @@ public enum PhotoDescription {
         let flattened = ocr
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(flattened) (photo captured \(stamp))"
+        // Cap the folded OCR: a full-page document would otherwise make a
+        // multi-thousand-character description that reads nothing like a
+        // standalone statement and, doubled with the full ocr_text field, pushes
+        // the body toward the server's size limit. The complete text still travels
+        // in ocr_text; this is only the human-readable description.
+        let condensed = flattened.count > maxFoldedOCRLength
+            ? String(flattened.prefix(maxFoldedOCRLength)) + "…"
+            : flattened
+        return "\(condensed) (photo captured \(stamp))"
     }
+
+    /// The longest OCR run folded into the description. Roughly a sentence or two;
+    /// enough for a label, short of a page.
+    private static let maxFoldedOCRLength = 240
 }

@@ -36,6 +36,20 @@ import Testing
         #expect(PhotoDraft(imageFilename: "x.jpg", description: text) != nil)
     }
 
+    @Test func templateCapsAVeryLongOCRRun() {
+        let longOCR = String(repeating: "A", count: 5000)
+        let text = PhotoDescription.template(
+            ocrText: longOCR,
+            occurredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            timeZone: TimeZone(identifier: "UTC")!
+        )
+        // A full-page OCR must not produce a multi-thousand-char description; it is
+        // truncated with an ellipsis, and the timestamp still trails.
+        #expect(text.count < 400)
+        #expect(text.contains("…"))
+        #expect(text.contains("2023"))
+    }
+
     @Test func templateWithBlankOCRIsTimestampOnly() {
         let withBlank = PhotoDescription.template(
             ocrText: "   ",

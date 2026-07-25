@@ -21,30 +21,60 @@ public struct VisionTextRecognizer: TextRecognizing {
 
     public func recognizeText(in imageData: Data) async -> String {
         await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
-            let request = VNRecognizeTextRequest { request, error in
-                guard error == nil,
-                      let observations = request.results as? [VNRecognizedTextObservation]
-                else {
-                    continuation.resume(returning: "")
-                    return
-                }
-                let text = observations
-                    .compactMap { $0.topCandidates(1).first?.string }
-                    .joined(separator: "\n")
-                continuation.resume(returning: text)
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
+            // Vision can BOTH call the request completion with an error AND rethrow
+            // from perform on the same failure. A naive double-resume traps the
+            // continuation, so guard it: resume exactly once, whichever path fires
+            // first. This is what keeps the seam's "OCR never fails a capture"
+            // contract from turning into a crash.
+            let resumeOnce = ResumeOnce(continuation)
 
-            // `perform` either invokes the completion (success) or throws without
-            // invoking it (failure), so exactly one resume happens on each path.
-            let handler = VNImageRequestHandler(data: imageData, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(returning: "")
+            // OCR is CPU-heavy and synchronous; run it off the cooperative thread
+            // pool so it does not starve other tasks. The request and handler are
+            // built inside the closure so no non-Sendable Vision object crosses the
+            // dispatch boundary.
+            DispatchQueue.global(qos: .utility).async {
+                let request = VNRecognizeTextRequest { request, error in
+                    guard error == nil,
+                          let observations = request.results as? [VNRecognizedTextObservation]
+                    else {
+                        resumeOnce.resume(with: "")
+                        return
+                    }
+                    let text = observations
+                        .compactMap { $0.topCandidates(1).first?.string }
+                        .joined(separator: "\n")
+                    resumeOnce.resume(with: text)
+                }
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = true
+
+                let handler = VNImageRequestHandler(data: imageData, options: [:])
+                do {
+                    try handler.perform([request])
+                } catch {
+                    resumeOnce.resume(with: "")
+                }
             }
         }
+    }
+}
+
+/// Resumes a `String`/`Never` continuation at most once, so the Vision
+/// double-signal (completion error + perform throw) cannot trap it.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<String, Never>?
+
+    init(_ continuation: CheckedContinuation<String, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(with value: String) {
+        let continuation = lock.withLock { () -> CheckedContinuation<String, Never>? in
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: value)
     }
 }
 #endif
