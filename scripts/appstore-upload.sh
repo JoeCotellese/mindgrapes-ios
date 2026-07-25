@@ -58,10 +58,18 @@ export API_PRIVATE_KEYS_DIR="$KEY_DIR"
 # each maintainer's own distribution profile satisfy the export.
 EXPORT_PLIST="$BUILD_DIR/ExportOptions.plist"
 
+# App Store Connect rejects a duplicate build number, so every upload needs a
+# fresh one. The git commit count is monotonic and needs no committed state to
+# bump; set BUILD_NUMBER to override (e.g. to re-upload the same commit after an
+# ASC-side deletion). This overrides project.yml's CURRENT_PROJECT_VERSION at
+# archive time.
+BUILD="${BUILD_NUMBER:-$(git rev-list --count HEAD)}"
+[ -n "$BUILD" ] || fail "could not compute a build number (git rev-list failed)"
+
 echo "==> Regenerating the project"
 make generate >/dev/null
 
-echo "==> Archiving"
+echo "==> Archiving build $BUILD"
 rm -rf "$ARCHIVE"
 mkdir -p "$BUILD_DIR"
 xcodebuild archive \
@@ -69,7 +77,8 @@ xcodebuild archive \
     -scheme MindGrapes \
     -destination 'generic/platform=iOS' \
     -archivePath "$ARCHIVE" \
-    DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"
+    DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+    CURRENT_PROJECT_VERSION="$BUILD"
 
 cat >"$EXPORT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
