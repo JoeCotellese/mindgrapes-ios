@@ -520,11 +520,15 @@ Acceptance: `perform()` called directly with injected dependencies asserts
 each outcome. An intent with the network down still returns success and
 leaves a durable record.
 
-#### 16. Onboarding
+#### 16. Onboarding — ✅ done
 
 `feat` | `sim`
 
-Slice 7. Decision 6 and SPEC 5.1.
+Slice 7. Decision 6 and SPEC 5.1. Shipped as GitHub #20: `ConnectView`
+replaces the throwaway `SignInView`, `QRScannerView` reads the code, and
+`ServerDiscovery.baseURL(fromScannedCode:)` decides whether a payload is one
+of ours. Success condition 1 stays unverifiable until the server renders the
+QR (mindgrapes-server#66); manual entry reaches the same state today.
 
 - QR scan of the server base URL, with manual entry as the documented
   fallback.
