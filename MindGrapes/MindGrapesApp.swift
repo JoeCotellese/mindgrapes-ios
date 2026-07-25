@@ -5,6 +5,8 @@ import SwiftUI
 
 @main
 struct MindGrapesApp: App {
+    @UIApplicationDelegateAdaptor(MindGrapesAppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup {
             NavigationStack {

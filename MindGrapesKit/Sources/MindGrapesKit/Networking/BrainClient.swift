@@ -49,6 +49,25 @@ public struct BrainClient: Sendable {
         return request
     }
 
+    /// The `/capture/note` request for a background `uploadTask(with:fromFile:)`:
+    /// the same headers as ``noteRequest(body:accessToken:)`` but no in-memory
+    /// body, since a background session reads the JSON from the spooled file.
+    public func noteUploadRequest(accessToken: String) -> URLRequest {
+        var request = authorizedPost(to: "capture/note", accessToken: accessToken)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return request
+    }
+
+    /// The `/capture/image` request for a background `uploadTask(with:fromFile:)`.
+    /// The multipart `Content-Type` still has to name the boundary the spooled
+    /// body was framed with, so the caller passes ``MultipartFormBody/contentType``
+    /// even though the bytes live in a file.
+    public func imageUploadRequest(contentType: String, accessToken: String) -> URLRequest {
+        var request = authorizedPost(to: "capture/image", accessToken: accessToken)
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        return request
+    }
+
     // MARK: - Sending
 
     /// Reachability (SPEC 6.1). Throws rather than returning a `Bool` so a caller
@@ -130,15 +149,26 @@ public struct BrainClient: Sendable {
             throw BrainClientError.malformedResponse
         }
 
-        switch http.statusCode {
-        case 200...299: return data
-        case 400: throw BrainClientError.badRequest
-        case 401: throw BrainClientError.unauthorized
-        case 405: throw BrainClientError.methodNotAllowed
-        case 413: throw BrainClientError.payloadTooLarge
-        case 415: throw BrainClientError.unsupportedMediaType
-        case 502: throw BrainClientError.badGateway
-        default: throw BrainClientError.unexpectedStatus(http.statusCode)
+        if let error = Self.error(forStatus: http.statusCode) { throw error }
+        return data
+    }
+
+    /// Maps an HTTP status to the typed capture-door error, or `nil` for success.
+    ///
+    /// Extracted so the background-session delegate (item 6) classifies a
+    /// completion the exact same way this in-process path does — one table, no
+    /// second copy to drift. The `2xx` success range and every documented status
+    /// (SPEC 6.3) resolve here identically for both callers.
+    public static func error(forStatus status: Int) -> BrainClientError? {
+        switch status {
+        case 200...299: nil
+        case 400: .badRequest
+        case 401: .unauthorized
+        case 405: .methodNotAllowed
+        case 413: .payloadTooLarge
+        case 415: .unsupportedMediaType
+        case 502: .badGateway
+        default: .unexpectedStatus(status)
         }
     }
 

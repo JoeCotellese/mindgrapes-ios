@@ -70,12 +70,32 @@ public struct AppGroupContainer: Sendable, Hashable {
         photoSpoolURL.appending(path: filename, directoryHint: .notDirectory)
     }
 
+    /// Where item 6 writes a background-session request body before handing it to
+    /// `uploadTask(with:fromFile:)`.
+    ///
+    /// Background uploads reject an in-memory body, so the encoded note JSON or
+    /// image multipart bytes have to live in a file the session can read after
+    /// this process dies. Distinct from ``photoSpoolURL``: that file *is* the
+    /// capture (the only copy of the downscaled photo), this one is a rebuildable
+    /// envelope the reconciler deletes once the task completes.
+    public var requestBodySpoolURL: URL {
+        rootURL.appending(path: "RequestBodySpool", directoryHint: .isDirectory)
+    }
+
+    /// The request-body file for one capture, named by its id so a completion can
+    /// find and delete it.
+    public func requestBodyFileURL(named filename: String) -> URL {
+        requestBodySpoolURL.appending(path: filename, directoryHint: .notDirectory)
+    }
+
     /// Creates any directory the container needs. Safe to call repeatedly, and
     /// callable from every process since each one may be the first to run.
     public func prepareDirectories() throws {
-        try FileManager.default.createDirectory(
-            at: photoSpoolURL,
-            withIntermediateDirectories: true
-        )
+        for directory in [photoSpoolURL, requestBodySpoolURL] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
     }
 }
