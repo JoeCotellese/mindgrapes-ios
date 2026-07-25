@@ -38,6 +38,7 @@ struct CaptureIntentRunnerTests {
     private func runner(
         _ fixture: Fixture,
         uploadBudget: Duration = .seconds(10),
+        photoUnderstanding: PhotoUnderstanding? = nil,
         token: @escaping @Sendable () async throws -> String = { "test-token" }
     ) -> CaptureIntentRunner {
         let queue = fixture.makeQueue()
@@ -46,7 +47,27 @@ struct CaptureIntentRunnerTests {
             session: CaptureRunnerStubURLProtocol.makeSession()
         )
         let drainer = CaptureDrainer(queue: queue, client: client, accessToken: token)
+        if let photoUnderstanding {
+            return CaptureIntentRunner(
+                queue: queue, drainer: drainer, appGroup: fixture.appGroup,
+                photoUnderstanding: photoUnderstanding, uploadBudget: uploadBudget
+            )
+        }
         return CaptureIntentRunner(queue: queue, drainer: drainer, appGroup: fixture.appGroup, uploadBudget: uploadBudget)
+    }
+
+    private struct StubRecognizer: TextRecognizing {
+        let text: String
+        func recognizeText(in imageData: Data) async -> String { text }
+    }
+
+    /// Never returns until cancelled, standing in for on-device work that outruns
+    /// the understanding budget.
+    private struct HangingRecognizer: TextRecognizing {
+        func recognizeText(in imageData: Data) async -> String {
+            try? await Task.sleep(for: .seconds(3600))
+            return ""
+        }
     }
 
     // MARK: - Notes
@@ -148,6 +169,62 @@ struct CaptureIntentRunnerTests {
         let outcome = await runner(fixture).capturePhoto(jpegFixture())
         #expect(outcome == .queued)
         #expect(try await fixture.makeQueue().allSnapshots().first?.kind == .photo)
+    }
+
+    @Test func recognizedTextReachesTheRecordAsOCRAndFoldsIntoTheDescription() async throws {
+        // The runner→queue→record path for OCR: a recognizer that returns text must
+        // land ocr_text on the record, and (with no model) fold it into the
+        // description. Guards against a future edit dropping understanding.ocrText.
+        CaptureRunnerStubURLProtocol.installTransportFailure(.notConnectedToInternet)
+        defer { CaptureRunnerStubURLProtocol.reset() }
+
+        let fixture = try Fixture()
+        let understanding = PhotoUnderstanding(
+            recognizer: StubRecognizer(text: "PURINA ONE SALMON"),
+            generator: TemplateOnlyDescriptionGenerator()
+        )
+        let outcome = await runner(fixture, photoUnderstanding: understanding).capturePhoto(jpegFixture())
+        #expect(outcome == .queued)
+
+        // Snapshots carry no content; read the record directly.
+        let record = try #require(
+            try ModelContext(fixture.container).fetch(FetchDescriptor<CaptureRecord>()).first
+        )
+        #expect(record.ocrText == "PURINA ONE SALMON")
+        #expect(record.captureDescription?.contains("PURINA ONE SALMON") == true)
+    }
+
+    @Test func aDurableRecordExistsEvenWhenUnderstandingExceedsItsBudget() async throws {
+        // The durable-first guarantee: understanding that never returns must not
+        // delay the capture from being saved. A hanging recognizer + a tiny budget
+        // still leaves a pending photo record with the provisional description.
+        CaptureRunnerStubURLProtocol.installTransportFailure(.notConnectedToInternet)
+        defer { CaptureRunnerStubURLProtocol.reset() }
+
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let client = BrainClient(
+            config: ServerConfig(baseURL: URL(string: "https://grapes.example.ts.net")!),
+            session: CaptureRunnerStubURLProtocol.makeSession()
+        )
+        let drainer = CaptureDrainer(queue: queue, client: client) { "test-token" }
+        let hangingRunner = CaptureIntentRunner(
+            queue: queue, drainer: drainer, appGroup: fixture.appGroup,
+            photoUnderstanding: PhotoUnderstanding(
+                recognizer: HangingRecognizer(), generator: TemplateOnlyDescriptionGenerator()
+            ),
+            understandingBudget: .milliseconds(50)
+        )
+
+        let outcome = await hangingRunner.capturePhoto(jpegFixture())
+        #expect(outcome == .queued)
+        let record = try #require(
+            try ModelContext(fixture.container).fetch(FetchDescriptor<CaptureRecord>()).first
+        )
+        #expect(record.kind == .photo)
+        // Provisional template stood in; no OCR, since understanding never returned.
+        #expect(record.ocrText == nil)
+        #expect(record.captureDescription?.hasPrefix("Photo captured") == true)
     }
 
     // MARK: - Fixture

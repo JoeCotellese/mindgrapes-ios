@@ -43,17 +43,29 @@ public struct CaptureIntentRunner: Sendable {
     private let queue: CaptureQueue
     private let drainer: CaptureDrainer
     private let appGroup: AppGroupContainer
+    private let photoUnderstanding: PhotoUnderstanding
+    private let timeZone: TimeZone
+    private let understandingBudget: Duration
     private let uploadBudget: Duration
 
     public init(
         queue: CaptureQueue,
         drainer: CaptureDrainer,
         appGroup: AppGroupContainer,
+        photoUnderstanding: PhotoUnderstanding = PhotoUnderstanding(
+            recognizer: DisabledTextRecognizer(),
+            generator: TemplateOnlyDescriptionGenerator()
+        ),
+        timeZone: TimeZone = .current,
+        understandingBudget: Duration = .seconds(8),
         uploadBudget: Duration = .seconds(10)
     ) {
         self.queue = queue
         self.drainer = drainer
         self.appGroup = appGroup
+        self.photoUnderstanding = photoUnderstanding
+        self.timeZone = timeZone
+        self.understandingBudget = understandingBudget
         self.uploadBudget = uploadBudget
     }
 
@@ -93,9 +105,15 @@ public struct CaptureIntentRunner: Sendable {
         } catch {
             return .rejected(reason: "bad_image")
         }
-        let text = description?.nonBlank ?? PhotoDescription.template(occurredAt: now)
+
+        // Enqueue durably FIRST, with a provisional description, before the slow
+        // on-device work. OCR and the on-device model take real time on a device;
+        // running them ahead of the durable write would let a kill or an intent
+        // time-limit lose the capture and orphan the spool file. So the record is
+        // safe on disk immediately, then enriched.
+        let provisional = description?.nonBlank ?? PhotoDescription.template(occurredAt: now, timeZone: timeZone)
         guard let draft = PhotoDraft(
-            imageFilename: filename, description: text, occurredAt: now,
+            imageFilename: filename, description: provisional, occurredAt: now,
             coordinate: location?.coordinate, placeLabel: location?.placeLabel
         ) else {
             // The derivative is spooled but no record will name it; delete it so
@@ -103,12 +121,58 @@ public struct CaptureIntentRunner: Sendable {
             deleteSpool(filename)
             return .rejected(reason: "bad_image")
         }
+        let enqueued: CaptureSnapshot
         do {
-            let enqueued = try await queue.enqueue(photo: draft, now: now)
-            return await settle(id: enqueued.id, now: now)
+            enqueued = try await queue.enqueue(photo: draft, now: now)
         } catch {
             deleteSpool(filename)
             return .rejected(reason: "save_failed")
+        }
+
+        // Enrich within a budget: OCR the original bytes (higher resolution than
+        // the spooled derivative) and compose the description — user words win,
+        // else the model, else the template (SPEC 7.2/7.3). On timeout or failure
+        // the provisional description stands and the capture proceeds. OCR always
+        // populates ocr_text, even when the human worded the description.
+        if let understanding = await understandWithinBudget(
+            imageData: imageData, userDescription: description, now: now
+        ) {
+            try? await queue.updatePhotoContent(
+                id: enqueued.id, description: understanding.description, ocrText: understanding.ocrText
+            )
+        }
+
+        return await settle(id: enqueued.id, now: now)
+    }
+
+    /// Runs the OCR + description composition under a time budget, returning `nil`
+    /// on timeout so the provisional description stands.
+    ///
+    /// The capture is already durable before this runs, so the budget is about
+    /// latency, not safety: a timeout never costs the capture. Cancelling the
+    /// timed-out child frees this promptly when the underlying work is
+    /// cancellation-aware — OCR is fast and the model's `respond` honors
+    /// cancellation; worst case (uncancellable work) only delays the enrichment,
+    /// never the durable record.
+    private func understandWithinBudget(
+        imageData: Data, userDescription: String?, now: Date
+    ) async -> PhotoUnderstanding.Result? {
+        let understanding = photoUnderstanding
+        let zone = timeZone
+        let budget = understandingBudget
+        return await withTaskGroup(of: PhotoUnderstanding.Result?.self) { group in
+            group.addTask {
+                await understanding.understand(
+                    imageData: imageData, userDescription: userDescription, occurredAt: now, timeZone: zone
+                )
+            }
+            group.addTask {
+                try? await Task.sleep(for: budget)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 

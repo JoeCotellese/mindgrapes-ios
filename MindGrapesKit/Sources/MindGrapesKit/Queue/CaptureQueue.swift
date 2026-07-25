@@ -172,6 +172,28 @@ public actor CaptureQueue {
         try context.save()
     }
 
+    /// Upgrades a still-pending photo's description and OCR text after the
+    /// on-device understanding finishes (Slice 6).
+    ///
+    /// ``CaptureIntentRunner`` enqueues the photo durably with a provisional
+    /// description *before* running OCR and the on-device model, so a kill or an
+    /// intent time-limit during that slow work costs only the smart description,
+    /// never the capture. This applies the upgrade once the work returns.
+    ///
+    /// Guarded to `pending`: if a drain already claimed the record (`inFlight`) or
+    /// it settled, the provisional description was already encoded and re-sending
+    /// is the queue's job, not this. No-op if the id is unknown, the record is not
+    /// a photo, or the new description is blank — the description field must never
+    /// go empty (SPEC 11's on-box-vision switch).
+    public func updatePhotoContent(id: UUID, description: String, ocrText: String?) throws {
+        guard let record = try record(id: id) else { return }
+        guard record.kind == .photo, record.state == .pending else { return }
+        guard let description = description.nonBlank else { return }
+        record.captureDescription = description
+        record.ocrText = ocrText?.nonBlank
+        try context.save()
+    }
+
     // MARK: - Auth expiry (SPEC 8.5)
 
     /// Parks every record that could still send (`pending` or `inFlight`) in
