@@ -182,6 +182,24 @@ struct CaptureQueueTests {
         #expect(reloaded.experienceID == "first")
     }
 
+    @Test func clearAllDeletesEveryRecordAndItsSpoolFile() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+
+        // A note, and a photo whose spool file actually exists on disk.
+        try await queue.enqueue(note: note())
+        let spoolURL = fixture.appGroup.photoSpoolFileURL(named: "wipe-me.jpg")
+        try Data([0xFF, 0xD8, 0xFF]).write(to: spoolURL)
+        try await queue.enqueue(photo: photo(filename: "wipe-me.jpg"))
+        #expect(try await queue.allSnapshots().count == 2)
+
+        try await queue.clearAll()
+
+        // Reverting clearAll to a no-op would leave two records here.
+        #expect(try await queue.allSnapshots().isEmpty)
+        #expect(FileManager.default.fileExists(atPath: spoolURL.path) == false)
+    }
+
     @Test func aLateFailureDoesNotUnparkAnAuthRequiredRecord() async throws {
         // SPEC 8.5: parked records are not retried. A record's own late transport
         // failure must not pull it out of authRequired back to pending.

@@ -79,6 +79,7 @@ struct SignInView: View {
         }
         busy = true
         Task {
+            var signedInOK = false
             do {
                 log.debug("signIn: discovering metadata at \(base.absoluteString, privacy: .public)")
                 status = "Discovering…"
@@ -101,13 +102,17 @@ struct SignInView: View {
                 // extension) target the same host without re-asking (SPEC 4.2).
                 SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig = ServerConfig(baseURL: base)
                 // Revive anything a dead refresh parked (SPEC 8.5): with fresh
-                // credentials the queue can drain again. make() builds the graph
-                // fresh here because a prior sign-out reset the cache.
-                if let composition = try? AppComposition.make() {
+                // credentials the queue can drain again. The build is logged if it
+                // fails so a successful-looking sign-in over a broken store leaves a
+                // breadcrumb here rather than only surfacing later in capture.
+                do {
+                    let composition = try AppComposition.make()
                     try? await composition.queue.resumeAfterAuth()
+                } catch {
+                    log.error("signIn: composition build failed after auth \(String(describing: error), privacy: .public)")
                 }
                 status = "Signed in ✓"
-                onSignedIn()
+                signedInOK = true
             } catch AuthError.signInCancelled {
                 log.debug("signIn: cancelled")
                 status = "Sign in cancelled."
@@ -116,6 +121,9 @@ struct SignInView: View {
                 status = "Sign in failed: \(error)"
             }
             busy = false
+            // Hand off only after the last local-state write, so nothing mutates
+            // this view once the root swaps it out.
+            if signedInOK { onSignedIn() }
         }
     }
 }

@@ -12,16 +12,26 @@ import SwiftUI
 /// parks for re-auth (SPEC 8.5); it is not this gate's job to detect.
 struct RootView: View {
     @State private var signedIn = RootView.hasStoredSession()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        if signedIn {
-            NavigationStack {
-                CaptureView(onSignOut: { signedIn = false })
+        Group {
+            if signedIn {
+                NavigationStack {
+                    CaptureView(onSignOut: { signedIn = false })
+                }
+            } else {
+                NavigationStack {
+                    SignInView(onSignedIn: { signedIn = true })
+                }
             }
-        } else {
-            NavigationStack {
-                SignInView(onSignedIn: { signedIn = true })
-            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Re-gate on foreground so a session that died mid-use (a dead refresh
+            // deletes the tokens and parks the queue) surfaces the sign-in screen
+            // on the next return, rather than stranding the user on capture with no
+            // way back. A still-valid session re-reads as signed in and stays put.
+            if phase == .active { signedIn = RootView.hasStoredSession() }
         }
     }
 

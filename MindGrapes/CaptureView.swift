@@ -84,10 +84,9 @@ struct CaptureView: View {
             }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(onSignOut: {
-                showSettings = false
-                onSignOut()
-            })
+            // onSignOut flips the root to sign-in, which tears down this view and
+            // its sheet together; no separate dismiss needed.
+            SettingsView(onSignOut: onSignOut)
         }
         .task { await prepare() }
         .onChange(of: scenePhase) { _, phase in

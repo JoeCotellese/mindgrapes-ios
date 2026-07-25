@@ -46,15 +46,27 @@ struct SettingsView: View {
     }
 
     private func signOut() {
-        do {
-            try TokenStore(accessGroup: nil).deleteTokens()
-        } catch {
-            // A Keychain failure here is not fatal to the sign-out intent: the
-            // cache reset and the root flip still send the user to sign-in, and a
-            // fresh sign-in overwrites whatever remained.
-            log.error("signOut: deleteTokens failed \(String(describing: error), privacy: .public)")
+        Task {
+            // Clear the device-global outbox FIRST: its records carry no account
+            // identity, so a capture left pending or parked must not survive to be
+            // revived and delivered under the next identity's bearer.
+            if let composition = try? AppComposition.make() {
+                do {
+                    try await composition.queue.clearAll()
+                } catch {
+                    log.error("signOut: clearAll failed \(String(describing: error), privacy: .public)")
+                }
+            }
+            do {
+                try TokenStore(accessGroup: nil).deleteTokens()
+            } catch {
+                // A Keychain failure here is not fatal to the sign-out intent: the
+                // cache reset and the root flip still send the user to sign-in, and
+                // a fresh sign-in overwrites whatever remained.
+                log.error("signOut: deleteTokens failed \(String(describing: error), privacy: .public)")
+            }
+            AppComposition.reset()
+            onSignOut()
         }
-        AppComposition.reset()
-        onSignOut()
     }
 }

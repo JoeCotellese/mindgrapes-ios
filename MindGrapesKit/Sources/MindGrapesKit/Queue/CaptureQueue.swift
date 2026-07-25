@@ -194,6 +194,26 @@ public actor CaptureQueue {
         try context.save()
     }
 
+    /// Deletes every capture record and its spooled derivative.
+    ///
+    /// The outbox is device-global and its records carry no account identity, so
+    /// they must not survive a sign-out: a record parked or pending under one
+    /// identity would otherwise be revived by ``resumeAfterAuth(now:)`` and
+    /// delivered under the next signed-in identity's bearer (a cross-account
+    /// leak). Sign-out clears it. Unsent captures are discarded, which is the
+    /// safe trade at a credential boundary.
+    ///
+    /// ponytail: whole-outbox wipe, since records have no subject. The
+    /// data-preserving fix is to stamp each record with its subject and clear only
+    /// on a subject change; that needs the token's `sub`, tracked as a follow-up.
+    public func clearAll() throws {
+        for record in try context.fetch(FetchDescriptor<CaptureRecord>()) {
+            deleteSpoolFile(for: record)
+            context.delete(record)
+        }
+        try context.save()
+    }
+
     // MARK: - Auth expiry (SPEC 8.5)
 
     /// Parks every record that could still send (`pending` or `inFlight`) in

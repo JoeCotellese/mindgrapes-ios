@@ -46,13 +46,15 @@ struct AppComposition: Sendable {
     /// failures: not onboarded (``CompositionError/notOnboarded``), or the App
     /// Group / store cannot be opened. A failed build is not cached, so a later
     /// call after sign-in succeeds.
-    /// Clears the cached composition so the next ``make()`` builds a fresh graph.
+    /// Clears the cached server/auth layer so the next ``make()`` rebuilds it.
     ///
-    /// Called on sign out: the cached composition holds an `AuthManager` bound to
-    /// credentials that sign out just deleted, so keeping it would leave a
-    /// re-signed-in session refreshing against stale tokens. Nilling the cache
-    /// drops that graph; the next `make()` (after the old one is released with the
-    /// capture screen) rebuilds one reading the new credentials.
+    /// Called on sign out and on re-onboarding to a different server: the cached
+    /// composition's `BrainClient` and `AuthManager` are bound to the old server's
+    /// config and metadata. Nilling `cached` drops only that layer; the durable
+    /// ``sharedStore`` (container, queue, uploader) is kept and never rebuilt, so
+    /// this cannot construct a second `ModelContainer`. Defensive rather than
+    /// load-bearing for tokens — `AuthManager` reads the Keychain live — but
+    /// required so a changed server routes captures to the right host.
     static func reset() {
         lock.withLock { cached = nil }
     }
@@ -66,10 +68,24 @@ struct AppComposition: Sendable {
         }
     }
 
-    private static func build() throws -> AppComposition {
-        guard let config = SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig else {
-            throw CompositionError.notOnboarded
-        }
+    /// The durable, user-agnostic half of the graph: the App Group container, the
+    /// SwiftData store, the queue over it, and the background uploader. Built at
+    /// most **once per process** and never rebuilt, because a second
+    /// `ModelContainer` over the same store URL segfaults CoreData schema setup
+    /// (SPEC 4.3). ``reset()`` rebuilds only the server/auth layer over these, so
+    /// no sign-out / re-sign-in / re-onboard can ever construct a second container
+    /// — even a capture App Intent running across a sign-out reuses this.
+    private struct SharedStore {
+        let appGroup: AppGroupContainer
+        let queue: CaptureQueue
+        let uploader: BackgroundUploader
+    }
+
+    nonisolated(unsafe) private static var sharedStore: SharedStore?
+
+    /// Builds or returns the process-global store components. Caller holds `lock`.
+    private static func sharedStoreComponents() throws -> SharedStore {
+        if let sharedStore { return sharedStore }
         let appGroup = try AppGroupContainer()
         try appGroup.prepareDirectories()
         let container = try ModelContainer(
@@ -77,17 +93,29 @@ struct AppComposition: Sendable {
             configurations: ModelConfiguration(url: appGroup.storeURL)
         )
         let queue = CaptureQueue(container: container, appGroup: appGroup)
+        let reconciler = BackgroundUploadReconciler(queue: queue)
+        let uploader = BackgroundUploader(reconciler: reconciler, appGroup: appGroup)
+        let store = SharedStore(appGroup: appGroup, queue: queue, uploader: uploader)
+        sharedStore = store
+        return store
+    }
+
+    private static func build() throws -> AppComposition {
+        guard let config = SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig else {
+            throw CompositionError.notOnboarded
+        }
+        // Reuse the once-built store; only the server-dependent transport below is
+        // rebuilt when reset() clears the cache.
+        let store = try sharedStoreComponents()
 
         let tokens = LazyTokenProvider(config: config)
         let client = BrainClient(config: config, session: .shared)
-        let drainer = CaptureDrainer(queue: queue, client: client) { try await tokens.validAccessToken() }
+        let drainer = CaptureDrainer(queue: store.queue, client: client) { try await tokens.validAccessToken() }
         let runner = CaptureIntentRunner(
-            queue: queue, drainer: drainer, appGroup: appGroup,
+            queue: store.queue, drainer: drainer, appGroup: store.appGroup,
             photoUnderstanding: makePhotoUnderstanding()
         )
-        let reconciler = BackgroundUploadReconciler(queue: queue)
-        let uploader = BackgroundUploader(reconciler: reconciler, appGroup: appGroup)
-        return AppComposition(queue: queue, drainer: drainer, runner: runner, uploader: uploader)
+        return AppComposition(queue: store.queue, drainer: drainer, runner: runner, uploader: store.uploader)
     }
 
     /// The real OCR + on-device description (Slice 6), each behind its framework
