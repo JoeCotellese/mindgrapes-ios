@@ -17,7 +17,14 @@ import Vision
 /// Not unit-tested: it is exercised on the simulator against reference images
 /// (item 12 acceptance), asserting known strings appear rather than exact output.
 public struct VisionTextRecognizer: TextRecognizing {
-    public init() {}
+    /// The hard deadline OCR resolves within, whatever Vision does. Shorter than
+    /// the caller's understanding budget so OCR never becomes the thing that
+    /// outlasts it.
+    private let deadline: Duration
+
+    public init(deadline: Duration = .seconds(6)) {
+        self.deadline = deadline
+    }
 
     public func recognizeText(in imageData: Data) async -> String {
         await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
@@ -27,6 +34,18 @@ public struct VisionTextRecognizer: TextRecognizing {
             // first. This is what keeps the seam's "OCR never fails a capture"
             // contract from turning into a crash.
             let resumeOnce = ResumeOnce(continuation)
+
+            // A hard deadline that resumes with no text if Vision neither completes
+            // nor throws. `perform` is synchronous and not cancellation-aware, so
+            // the caller's task-group budget cannot free a stalled OCR on its own
+            // (a task group awaits its children even after cancelAll); this makes
+            // recognizeText self-bounding, so a hung OCR degrades to the template
+            // instead of freezing the capture.
+            let deadlineSeconds = Double(deadline.components.seconds)
+                + Double(deadline.components.attoseconds) / 1e18
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + deadlineSeconds) {
+                resumeOnce.resume(with: "")
+            }
 
             // OCR is CPU-heavy and synchronous; run it off the cooperative thread
             // pool so it does not starve other tasks. The request and handler are
