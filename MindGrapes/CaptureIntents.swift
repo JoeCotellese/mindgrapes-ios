@@ -100,14 +100,26 @@ extension CaptureOutcome {
 
 /// The zero-config Siri phrases. Every entry point runs the same intent, so the
 /// pipeline is exercised identically from voice, the Shortcuts app, and the UI.
+///
+/// Every phrase must contain `.applicationName`; without it Siri never considers
+/// the shortcut and a bare "capture a thought" routes to Apple Notes. The token
+/// also matches the `INAlternativeAppNames` in Info.plist, so "mind grapes" and
+/// "grapes" resolve too. Leading-name forms are included because Siri matches
+/// them more reliably than trailing ones when the utterance is clipped.
 struct MindGrapesShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: CaptureNoteIntent(),
             phrases: [
                 "Capture a thought in \(.applicationName)",
+                "Capture a thought with \(.applicationName)",
+                "\(.applicationName) capture a thought",
                 "Capture a note in \(.applicationName)",
+                "Capture a note with \(.applicationName)",
+                "\(.applicationName) capture a note",
                 "New note in \(.applicationName)",
+                "Capture in \(.applicationName)",
+                "\(.applicationName) capture",
             ],
             shortTitle: "Capture Note",
             systemImageName: "square.and.pencil"

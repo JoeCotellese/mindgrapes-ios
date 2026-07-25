@@ -61,6 +61,15 @@ targets:
       path: MindGrapes/Info.plist
       properties:
         CFBundleDisplayName: MindGrapes
+        # How Siri hears and says the app name. "MindGrapes" as one written word
+        # is not what anyone says out loud, and an App Shortcut only matches when
+        # the utterance carries the app name — so the spoken form and the aliases
+        # are what make "capture a thought in mind grapes" reach our intent
+        # instead of Apple Notes.
+        CFBundleSpokenName: Mind Grapes
+        INAlternativeAppNames:
+          - INAlternativeAppName: Mind Grapes
+          - INAlternativeAppName: Grapes
         UILaunchScreen: {}
         # Slice 2 camera capture. The photo picker uses the out-of-process
         # PHPicker and needs no photo-library string.
