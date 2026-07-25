@@ -30,6 +30,12 @@ struct AppComposition: Sendable {
     let queue: CaptureQueue
     let drainer: CaptureDrainer
     let runner: CaptureIntentRunner
+    /// The background-session uploader (item 6). Constructed and reconciler-backed
+    /// so a relaunch for `handleEventsForBackgroundURLSession` reattaches to the
+    /// same session and drains its held completions. The capture call sites still
+    /// deliver through ``drainer`` for now; routing them through this session is
+    /// the device-verified switchover (SPEC 8.2 success condition 5).
+    let uploader: BackgroundUploader
 
     enum CompositionError: Error { case notOnboarded }
 
@@ -65,7 +71,9 @@ struct AppComposition: Sendable {
         let client = BrainClient(config: config, session: .shared)
         let drainer = CaptureDrainer(queue: queue, client: client) { try await tokens.validAccessToken() }
         let runner = CaptureIntentRunner(queue: queue, drainer: drainer, appGroup: appGroup)
-        return AppComposition(queue: queue, drainer: drainer, runner: runner)
+        let reconciler = BackgroundUploadReconciler(queue: queue)
+        let uploader = BackgroundUploader(reconciler: reconciler, appGroup: appGroup)
+        return AppComposition(queue: queue, drainer: drainer, runner: runner, uploader: uploader)
     }
 }
 
