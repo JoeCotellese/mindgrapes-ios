@@ -101,14 +101,14 @@ intents (call the pipeline from the view for now), #16 onboarding, full #18.
 **Server work required, server-side:**
 - ✅ Private-use redirect URIs in DCR: server PR #45 is **merged**. OAuth
   sign-in (#10) is unblocked; the loopback bridge is not needed.
-- ⏳ **The one remaining blocker: `POST /capture/note`** (SPEC 6.4), tracked as
-  `mindgrapes-server` #53. A sibling of `capture_image_api` calling
+- ✅ **`POST /capture/note`** (SPEC 6.4), tracked as `mindgrapes-server` #53, is
+  **live**. A sibling of `capture_image_api` calling
   `captures.capture(..., client="app")`, reusing the existing field parsers.
-  It does not exist yet; `/capture` is extension-only (requires a URL,
-  summarizes) so it is no substitute. `effort/S`. Punt the `place_label` open
-  question by accepting-and-ignoring or omitting it; Slice 1 sends no location.
+  `/capture` remains extension-only (requires a URL, summarizes) so it is no
+  substitute. The `place_label` open question was punted by
+  accepting-and-ignoring; Slice 1 sends no location.
 
-Once #53 lands, the client work is unblocked.
+All Slice 1 server dependencies are landed; the client work is unblocked.
 
 **Must-not-forget wiring.** `CaptureQueue` already parks captures in
 `authRequired` on `invalid_grant` and revives them via `resumeAfterAuth`. Slice
@@ -661,12 +661,11 @@ dictionary assertion.
 From SPEC section 14. Verified against the live `mindgrapes-server` repo on
 2026-07-24.
 
-1. **`POST /capture/note`. Not written. The one remaining Slice 1 blocker.**
-   Tracked as `mindgrapes-server` #53 (`effort/S`). Text capture cannot reach
-   the server until this exists; items 3–5 were built and tested against the
-   documented contract, so only the endpoint itself is missing. `/capture`
-   exists but is extension-only (requires a URL, summarizes), so it is no
-   substitute.
+1. ✅ **`POST /capture/note` is live** (`mindgrapes-server` #53). Text capture
+   reaches the server; items 3–5 were built and tested against the documented
+   contract, and the endpoint now backs them. `/capture` remains
+   extension-only (requires a URL, summarizes), so it is no substitute. No
+   Slice 1 server dependencies remain open.
 2. ✅ **Private-use scheme redirect URIs in DCR. Merged** (`mindgrapes-server`
    PR #45). #10 / Slice 1 sign-in is unblocked; the loopback bridge is not
    needed.
