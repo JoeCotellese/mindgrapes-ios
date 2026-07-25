@@ -51,6 +51,68 @@ struct ServerDiscoveryNormalizationTests {
     }
 }
 
+// MARK: - Scanned codes (pure)
+
+/// A scanned code is machine-written, so it is held to a stricter standard than
+/// something a human typed: the server always encodes a full URL, and every
+/// other QR in the world is not a Mind Grapes server.
+@Suite("ServerDiscovery scanned codes")
+struct ServerDiscoveryScannedCodeTests {
+    @Test(
+        "a server QR yields its base URL",
+        arguments: [
+            ("https://grapes.example.ts.net", "https://grapes.example.ts.net"),
+            // Encoders commonly append a newline; the payload is still the URL.
+            ("https://grapes.example.ts.net\n", "https://grapes.example.ts.net"),
+            // A LAN deployment on http with a port.
+            ("http://192.168.1.10:8080", "http://192.168.1.10:8080"),
+            // A reverse-proxy subpath survives, same as typed entry.
+            ("https://example.com/grapes/", "https://example.com/grapes/"),
+        ] as [(String, String)]
+    )
+    func accepts(payload: String, expected: String) {
+        #expect(ServerDiscovery.baseURL(fromScannedCode: payload)?.absoluteString == expected)
+    }
+
+    @Test(
+        "anything that is not an http(s) URL yields nil",
+        arguments: [
+            "",                                 // an empty symbol
+            "   ",                              // whitespace only
+            // The difference from typed entry: a human means a host, a QR that
+            // omits the scheme is some other kind of code.
+            "grapes.example.ts.net",
+            "openbrain",                        // a bare word parses as a host; reject it here
+            "WIFI:S:home;T:WPA;P:hunter2;;",    // the QR on the back of a router
+            "mailto:joe@example.com",
+            "tel:+15555550123",
+            "BEGIN:VCARD\nVERSION:3.0\nEND:VCARD",
+            "Just some text someone printed",
+            "ftp://example.com",                // a scheme we cannot probe over
+            "javascript:alert(1)",              // not a fetchable scheme
+            "https://",                         // a scheme with no host
+        ]
+    )
+    func rejects(payload: String) {
+        #expect(ServerDiscovery.baseURL(fromScannedCode: payload) == nil)
+    }
+
+    @Test func aMixedCaseSchemeIsAccepted() {
+        // The scheme test is a prefix check, so it has to be case-insensitive or
+        // a conforming QR generator that upcases the scheme reads as foreign.
+        #expect(ServerDiscovery.baseURL(fromScannedCode: "HTTPS://grapes.example.ts.net") != nil)
+    }
+
+    @Test func aBareHostIsTypeableButNotScannable() {
+        // The whole point of the second function: the same string a human may
+        // type is not a code we accept. Pinned here so a later "simplification"
+        // that collapses the two functions fails loudly.
+        let bare = "grapes.example.ts.net"
+        #expect(ServerDiscovery.normalizedURL(from: bare) != nil)
+        #expect(ServerDiscovery.baseURL(fromScannedCode: bare) == nil)
+    }
+}
+
 // MARK: - Reachability probe (scripted)
 
 /// Serialized because `DiscoveryStubURLProtocol` scripts answers through

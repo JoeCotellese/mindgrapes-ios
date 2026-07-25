@@ -8,8 +8,9 @@ import Foundation
 /// concern from `ServerConfig` on purpose: that type stores a verified base URL
 /// and says nothing about how a raw string became one.
 ///
-/// This is the thin subset item #9 needs for Slice 1: manual URL entry plus the
-/// `/healthz` probe. QR parsing is Slice 7.
+/// Item #9 brought the thin subset Slice 1 needed: manual URL entry plus the
+/// `/healthz` probe. Slice 7 (#20) added ``baseURL(fromScannedCode:)`` for the
+/// QR the server renders on `/connect`.
 public enum ServerDiscovery {
     /// What the `/healthz` probe learned about a typed URL. Three states because
     /// the connect screen has to tell the user *which* thing is wrong: the URL
@@ -59,6 +60,26 @@ public enum ServerDiscovery {
               let host = components.host, !host.isEmpty
         else { return nil }
         return components.url
+    }
+
+    /// The base `URL` a scanned QR carries, or `nil` when the symbol is not one
+    /// of ours.
+    ///
+    /// Stricter than ``normalizedURL(from:)`` on purpose: the scheme must be
+    /// spelled out. A human typing `grapes.example.ts.net` means a host and
+    /// deserves the `https` default, but a scanned symbol is machine-written,
+    /// and the server always encodes a full URL. Without that rule a Wi-Fi
+    /// symbol or a printed word parses as a plausible host, and the user gets a
+    /// connection error for what is really "that is not a Mind Grapes code".
+    ///
+    /// The scan carries a hostname and nothing else: no token, no pairing
+    /// secret, no short-lived code. It grants no access on its own, and the
+    /// passkey ceremony still runs afterward. Keep it that way.
+    public static func baseURL(fromScannedCode payload: String) -> URL? {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        guard lower.hasPrefix("http://") || lower.hasPrefix("https://") else { return nil }
+        return normalizedURL(from: trimmed)
     }
 }
 

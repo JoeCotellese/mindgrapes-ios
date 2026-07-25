@@ -115,6 +115,18 @@ private func withTemporaryDefaults(_ body: (SharedDefaults) throws -> Void) thro
     }
 }
 
+@Test func theLocationPitchStartsUnanswered() throws {
+    // Onboarding (#20) is "has credentials AND has answered the pitch". An unset
+    // key must read as unanswered, so a fresh install still gets asked; reading
+    // it as answered would silently restore the ambush-on-first-capture the
+    // pitch exists to replace.
+    try withTemporaryDefaults { shared in
+        #expect(shared.locationPitchAnswered == false)
+        shared.locationPitchAnswered = true
+        #expect(shared.locationPitchAnswered)
+    }
+}
+
 @Test func sharedDefaultsKeysAreStable() throws {
     // These keys are written by the app and read by every extension; renaming
     // one silently strands the other side's value.
