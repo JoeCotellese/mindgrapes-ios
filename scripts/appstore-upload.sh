@@ -39,6 +39,13 @@ command -v xcodegen >/dev/null 2>&1 || fail "xcodegen not found. brew install xc
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO_ROOT"
 
+# xcodebuild's -authenticationKeyPath demands an absolute path; .env commonly
+# stores a repo-relative one. Resolve it now, after the file existence check.
+case "$ASC_KEY_PATH" in
+    /*) ;;
+    *) ASC_KEY_PATH="$REPO_ROOT/${ASC_KEY_PATH#./}" ;;
+esac
+
 BUILD_DIR="$REPO_ROOT/build/release"
 ARCHIVE="$BUILD_DIR/MindGrapes.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
@@ -99,10 +106,18 @@ PLIST
 
 echo "==> Exporting the IPA"
 rm -rf "$EXPORT_DIR"
+# -allowProvisioningUpdates plus the App Store Connect API key lets xcodebuild
+# create and download the iOS Distribution certificate and provisioning profile
+# on demand, so a machine that has never signed in to Xcode with this account can
+# still export for the store. The key must have an App Manager (or Admin) role.
 xcodebuild -exportArchive \
     -archivePath "$ARCHIVE" \
     -exportOptionsPlist "$EXPORT_PLIST" \
-    -exportPath "$EXPORT_DIR"
+    -exportPath "$EXPORT_DIR" \
+    -allowProvisioningUpdates \
+    -authenticationKeyPath "$ASC_KEY_PATH" \
+    -authenticationKeyID "$ASC_KEY_ID" \
+    -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
 IPA=$(find "$EXPORT_DIR" -maxdepth 1 -name '*.ipa' | head -1)
 [ -n "$IPA" ] || fail "no IPA produced under $EXPORT_DIR"
