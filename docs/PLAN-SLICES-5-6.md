@@ -77,4 +77,15 @@ Device-only (HITL):
 
 ## Status log
 
-- (append progress here as slices land)
+- **Slice 5 landed** (merge `1289016`). Loop-tested `BackgroundUploadReconciler`
+  (SPEC 8.2), reconnect drain wired (condition 4, app alive), device seams
+  compile-only. Two adversarial reviews folded (markSucceeded resurrection race,
+  lazy-session race, parked-record success drop). Condition 5 (kill-mid-upload)
+  deferred as the documented HITL switchover. Suite 252 → 272.
+- **Slice 6 landed** (merge `e428d55`). Loop-tested `PhotoUnderstanding` composer
+  + template upgrade + seams; real Vision + Foundation Models compile-verified on
+  the simulator and wired into `AppComposition`. Two adversarial reviews folded
+  (durable-first ordering, Vision double-resume crash, OCR length cap, prompt
+  fencing). Suite 272 → 284.
+- Combined HITL checklist: `docs/HANDOFF-SLICES-5-6.md`.
+- Final state: `make test` 284 green, `make build` succeeds. No pushes.
