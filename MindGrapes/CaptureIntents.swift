@@ -5,32 +5,69 @@ import AppIntents
 import Foundation
 import MindGrapesKit
 import OSLog
+import UniformTypeIdentifiers
 
 private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "intents")
 
 /// "Hey Siri, capture a thought." Prompts for the note, runs the pipeline, and
 /// speaks the outcome. The result never waits on the round-trip (SPEC 7.1).
-struct CaptureNoteIntent: AppIntent {
+///
+/// The `.notes.createNote` schema is what lets Siri route a request it has never
+/// seen a phrase for. Phrases alone lose: a bare "capture a thought" went to
+/// Apple Notes, because without a schema the system has no idea this app takes
+/// notes at all. The schema says so structurally, so Apple Intelligence can pick
+/// this app for wording nobody enumerated in `MindGrapesShortcuts`.
+@AppIntent(schema: .notes.createNote)
+struct CaptureNoteIntent {
     static let title: LocalizedStringResource = "Capture a Note"
     static let description = IntentDescription("Save a quick thought to MindGrapes.")
 
-    @Parameter(title: "Note", requestValueDialog: "What's on your mind?")
-    var text: String
+    // `content` (not `text`) and `AttributedString` are the schema's vocabulary;
+    // Apple Intelligence maps by property name. The schema requires it optional,
+    // so the spoken prompt moves to `name`: an optional parameter is never
+    // requested, and a capture with nothing in it is the one outcome to avoid.
+    @Parameter(title: "Note")
+    var content: AttributedString?
 
-    func perform() async throws -> some IntentResult & ProvidesDialog {
+    // The schema's title field. Siri asks for this when a request arrives with
+    // no text, which is why the dialog lives here rather than on `content`.
+    @Parameter(title: "Title", requestValueDialog: "What's on your mind?")
+    var name: String
+
+    // Required by the schema, unused by this app. See NoteEntities.swift: there
+    // are no folders or pinned captures in a flat stream of experiences. Photos
+    // have their own intent and pipeline (SPEC 7.2), so attachments arriving here
+    // are dropped rather than half-handled.
+    @Parameter(title: "Attachments", default: [], supportedContentTypes: [.data])
+    var attachments: [IntentFile]
+
+    @Parameter(title: "Pinned", default: false)
+    var isPinned: Bool
+
+    @Parameter(title: "Folder")
+    var folder: NoteFolderEntity?
+
+    func perform() async throws -> some IntentResult & ReturnsValue<NoteEntity> & ProvidesDialog {
+        // The server takes plain text (SPEC 6.4); the attributed run data carries
+        // nothing a capture needs, so drop it at the boundary rather than teach
+        // the wire encoder about styling. A request that filled in only the title
+        // still captured something the user said, so it is the text.
+        let text = content.map { String($0.characters) } ?? name
+        let captured = NoteEntity(id: UUID(), text: text, createdAt: Date())
+
         let runner: CaptureIntentRunner
         do {
             runner = try AppComposition.make().runner
         } catch AppComposition.CompositionError.notOnboarded {
-            return .result(dialog: notOnboardedDialog)
+            return .result(value: captured, dialog: notOnboardedDialog)
         } catch {
             // A store/App-Group failure means the note was NOT saved; do not tell
             // the user to sign in (they would not retry a lost capture).
             log.error("note intent composition failed: \(String(describing: error), privacy: .public)")
-            return .result(dialog: storageFailureDialog)
+            return .result(value: captured, dialog: storageFailureDialog)
         }
         let outcome = await runner.captureNote(text)
-        return .result(dialog: IntentDialog(stringLiteral: outcome.spokenPhrase))
+        return .result(value: captured, dialog: IntentDialog(stringLiteral: outcome.spokenPhrase))
     }
 }
 

@@ -6,7 +6,10 @@ name: MindGrapes
 options:
   bundleIdPrefix: net.cotellese
   deploymentTarget:
-    iOS: "26.0"
+    # iOS 27 for the `.notes.createNote` app schema (SPEC 10.7): the macro's
+    # generated conformance is @available(iOS 27.0, *), and gating it would mean
+    # either a duplicate 26-compatible intent or no App Shortcuts on 26.
+    iOS: "27.0"
   createIntermediateGroups: true
   groupSortPosition: top
 
