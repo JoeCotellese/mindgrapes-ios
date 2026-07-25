@@ -22,4 +22,32 @@ import Testing
         )
         #expect(text.contains("2023"))
     }
+
+    @Test func templateFoldsInOCRTextWhenPresent() {
+        let text = PhotoDescription.template(
+            ocrText: "PURINA ONE\nSALMON RECIPE",
+            occurredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            timeZone: TimeZone(identifier: "UTC")!
+        )
+        // The label's own words lead, newlines flattened, timestamp trailing.
+        #expect(text.contains("PURINA ONE SALMON RECIPE"))
+        #expect(text.contains("2023"))
+        #expect(!text.contains("\n"))
+        #expect(PhotoDraft(imageFilename: "x.jpg", description: text) != nil)
+    }
+
+    @Test func templateWithBlankOCRIsTimestampOnly() {
+        let withBlank = PhotoDescription.template(
+            ocrText: "   ",
+            occurredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            timeZone: TimeZone(identifier: "UTC")!
+        )
+        let withNil = PhotoDescription.template(
+            occurredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            timeZone: TimeZone(identifier: "UTC")!
+        )
+        // Blank OCR is treated as no OCR: identical to the timestamp-only form.
+        #expect(withBlank == withNil)
+        #expect(withBlank.hasPrefix("Photo captured"))
+    }
 }

@@ -43,17 +43,26 @@ public struct CaptureIntentRunner: Sendable {
     private let queue: CaptureQueue
     private let drainer: CaptureDrainer
     private let appGroup: AppGroupContainer
+    private let photoUnderstanding: PhotoUnderstanding
+    private let timeZone: TimeZone
     private let uploadBudget: Duration
 
     public init(
         queue: CaptureQueue,
         drainer: CaptureDrainer,
         appGroup: AppGroupContainer,
+        photoUnderstanding: PhotoUnderstanding = PhotoUnderstanding(
+            recognizer: DisabledTextRecognizer(),
+            generator: TemplateOnlyDescriptionGenerator()
+        ),
+        timeZone: TimeZone = .current,
         uploadBudget: Duration = .seconds(10)
     ) {
         self.queue = queue
         self.drainer = drainer
         self.appGroup = appGroup
+        self.photoUnderstanding = photoUnderstanding
+        self.timeZone = timeZone
         self.uploadBudget = uploadBudget
     }
 
@@ -93,10 +102,15 @@ public struct CaptureIntentRunner: Sendable {
         } catch {
             return .rejected(reason: "bad_image")
         }
-        let text = description?.nonBlank ?? PhotoDescription.template(occurredAt: now)
+        // OCR the original bytes (higher resolution than the spooled derivative)
+        // and compose the description: user words win, else the model, else the
+        // template (SPEC 7.2/7.3). OCR is best-effort and never fails the capture.
+        let understanding = await photoUnderstanding.understand(
+            imageData: imageData, userDescription: description, occurredAt: now, timeZone: timeZone
+        )
         guard let draft = PhotoDraft(
-            imageFilename: filename, description: text, occurredAt: now,
-            coordinate: location?.coordinate, placeLabel: location?.placeLabel
+            imageFilename: filename, description: understanding.description, ocrText: understanding.ocrText,
+            occurredAt: now, coordinate: location?.coordinate, placeLabel: location?.placeLabel
         ) else {
             // The derivative is spooled but no record will name it; delete it so
             // it is not orphaned (only record-backed spool files are ever reclaimed).

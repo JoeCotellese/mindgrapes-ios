@@ -70,10 +70,33 @@ struct AppComposition: Sendable {
         let tokens = LazyTokenProvider(config: config)
         let client = BrainClient(config: config, session: .shared)
         let drainer = CaptureDrainer(queue: queue, client: client) { try await tokens.validAccessToken() }
-        let runner = CaptureIntentRunner(queue: queue, drainer: drainer, appGroup: appGroup)
+        let runner = CaptureIntentRunner(
+            queue: queue, drainer: drainer, appGroup: appGroup,
+            photoUnderstanding: makePhotoUnderstanding()
+        )
         let reconciler = BackgroundUploadReconciler(queue: queue)
         let uploader = BackgroundUploader(reconciler: reconciler, appGroup: appGroup)
         return AppComposition(queue: queue, drainer: drainer, runner: runner, uploader: uploader)
+    }
+
+    /// The real OCR + on-device description (Slice 6), each behind its framework
+    /// gate so a build without Vision or Foundation Models falls back cleanly. On
+    /// device the model is used only when Apple Intelligence reports available;
+    /// otherwise the template fallback (SPEC 7.3, success condition 8) runs.
+    private static func makePhotoUnderstanding() -> PhotoUnderstanding {
+        #if canImport(Vision)
+        let recognizer: any TextRecognizing = VisionTextRecognizer()
+        #else
+        let recognizer: any TextRecognizing = DisabledTextRecognizer()
+        #endif
+
+        #if canImport(FoundationModels)
+        let generator: any DescriptionGenerating = FoundationModelsDescriptionGenerator()
+        #else
+        let generator: any DescriptionGenerating = TemplateOnlyDescriptionGenerator()
+        #endif
+
+        return PhotoUnderstanding(recognizer: recognizer, generator: generator)
     }
 }
 
