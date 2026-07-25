@@ -46,6 +46,12 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        # Interface orientations. iPad must declare all four (or UIRequiresFullScreen
+        # with a subset) or App Store Connect rejects the bundle at upload (#18).
+        # Lives here, not in the Xcode project: the .xcodeproj is regenerated from
+        # this file at archive time, so an edit made in Xcode would be wiped.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: "0.1.0"
     info:
