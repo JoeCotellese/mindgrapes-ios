@@ -2,6 +2,9 @@
 // ABOUTME: ponytail: throwaway Slice-1/2 glue; the background uploader (item 6) replaces it wholesale.
 
 import Foundation
+import OSLog
+
+private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "drain")
 
 /// One synchronous-ish pass over the outbox: claim what is due, send each note
 /// and photo, tell the queue what happened.
@@ -109,6 +112,7 @@ public struct CaptureDrainer: Sendable {
             // The queue classifies by disposition: terminal fails the record,
             // retryable backs it off, a lone 401 holds it due-now for the
             // refresh-and-retry on the next pass (SPEC 8.3).
+            log.error("note \(id, privacy: .public) failed: \(error.code, privacy: .public) (\(String(describing: error), privacy: .public))")
             try await queue.markFailed(id: id, error: error, now: now)
         }
         // A CaptureEncodingError is left to propagate: with a NoteDraft's
@@ -126,6 +130,7 @@ public struct CaptureDrainer: Sendable {
             // or the record is malformed. Terminal for this record only, so fail
             // it and keep draining the rest rather than re-attempting a doomed
             // encode forever.
+            log.error("photo \(id, privacy: .public) unsendable: \(String(describing: error), privacy: .public)")
             try await queue.markUnsendable(id: id, code: encodingCode(for: error))
             return
         }
@@ -135,8 +140,10 @@ public struct CaptureDrainer: Sendable {
         // next pass's recoverInterrupted to reclaim — the bytes are still on disk.
         do {
             let response = try await client.postImage(body: body, accessToken: token)
+            log.info("photo \(id, privacy: .public) sent: experience \(response.experienceID, privacy: .public)")
             try await queue.markSucceeded(id: id, experienceID: response.experienceID)
         } catch let error as BrainClientError {
+            log.error("photo \(id, privacy: .public) failed: \(error.code, privacy: .public) (\(String(describing: error), privacy: .public))")
             try await queue.markFailed(id: id, error: error, now: now)
         }
     }

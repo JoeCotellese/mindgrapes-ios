@@ -140,7 +140,9 @@ struct CaptureView: View {
         busy = true
         Task {
             let fix = await locationFix()
+            log.info("capturePhoto: \(data.count, privacy: .public) bytes, location=\(fix != nil, privacy: .public)")
             let outcome = await runner.capturePhoto(data, location: fix)
+            log.info("capturePhoto outcome: \(String(describing: outcome), privacy: .public)")
             status = describe(outcome)
             busy = false
         }
