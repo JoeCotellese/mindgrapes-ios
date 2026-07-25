@@ -16,12 +16,16 @@ private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "captu
 /// than aspirational. The screen adds only what is UI: the location toggle and a
 /// status line.
 struct CaptureView: View {
+    /// Called after the user signs out, so the root can return to sign-in.
+    var onSignOut: () -> Void = {}
+
     @State private var text = ""
     @State private var status = "Preparing…"
     @State private var runner: CaptureIntentRunner?
     @State private var drainer: CaptureDrainer?
     @State private var photoItem: PhotosPickerItem?
     @State private var showCamera = false
+    @State private var showSettings = false
     @State private var includeLocation = true
     @State private var busy = false
     @Environment(\.scenePhase) private var scenePhase
@@ -70,6 +74,21 @@ struct CaptureView: View {
         }
         .padding()
         .navigationTitle("MindGrapes")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(onSignOut: {
+                showSettings = false
+                onSignOut()
+            })
+        }
         .task { await prepare() }
         .onChange(of: scenePhase) { _, phase in
             // Foregrounding drains anything that backed off while away.

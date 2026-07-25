@@ -46,6 +46,17 @@ struct AppComposition: Sendable {
     /// failures: not onboarded (``CompositionError/notOnboarded``), or the App
     /// Group / store cannot be opened. A failed build is not cached, so a later
     /// call after sign-in succeeds.
+    /// Clears the cached composition so the next ``make()`` builds a fresh graph.
+    ///
+    /// Called on sign out: the cached composition holds an `AuthManager` bound to
+    /// credentials that sign out just deleted, so keeping it would leave a
+    /// re-signed-in session refreshing against stale tokens. Nilling the cache
+    /// drops that graph; the next `make()` (after the old one is released with the
+    /// capture screen) rebuilds one reading the new credentials.
+    static func reset() {
+        lock.withLock { cached = nil }
+    }
+
     static func make() throws -> AppComposition {
         try lock.withLock {
             if let cached { return cached }

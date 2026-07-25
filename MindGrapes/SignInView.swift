@@ -10,11 +10,20 @@ private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "signi
 /// One field, a Check button, a Sign in button, and a status line. Enough to run
 /// the whole Slice 1 sign-in path against a real server; deliberately dumb.
 struct SignInView: View {
-    // ponytail: default to the dev brain so a HITL run is one tap. Editable.
-    @State private var urlText = "https://openbrain-mcp.perch-iwato.ts.net"
+    /// Called after a successful sign-in so the root can show capture.
+    let onSignedIn: () -> Void
+
+    @State private var urlText: String
     @State private var status = "Enter your Mind Grapes server URL."
     @State private var busy = false
-    @State private var showCapture = false
+
+    init(onSignedIn: @escaping () -> Void) {
+        self.onSignedIn = onSignedIn
+        // Pre-fill the last connected server so re-signing in after a sign-out is
+        // one tap; fall back to the dev brain on a fresh install.
+        let stored = SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig?.baseURL.absoluteString
+        _urlText = State(initialValue: stored ?? "https://openbrain-mcp.perch-iwato.ts.net")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -41,11 +50,6 @@ struct SignInView: View {
             Spacer()
         }
         .padding()
-        .navigationDestination(isPresented: $showCapture) {
-            // CaptureView reads the persisted server config through AppComposition,
-            // so it needs no base URL threaded in.
-            CaptureView()
-        }
     }
 
     private func check() {
@@ -96,8 +100,14 @@ struct SignInView: View {
                 // Persist the chosen server so the capture screen (and a future
                 // extension) target the same host without re-asking (SPEC 4.2).
                 SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig = ServerConfig(baseURL: base)
+                // Revive anything a dead refresh parked (SPEC 8.5): with fresh
+                // credentials the queue can drain again. make() builds the graph
+                // fresh here because a prior sign-out reset the cache.
+                if let composition = try? AppComposition.make() {
+                    try? await composition.queue.resumeAfterAuth()
+                }
                 status = "Signed in ✓"
-                showCapture = true
+                onSignedIn()
             } catch AuthError.signInCancelled {
                 log.debug("signIn: cancelled")
                 status = "Sign in cancelled."
@@ -111,5 +121,5 @@ struct SignInView: View {
 }
 
 #Preview {
-    SignInView()
+    SignInView(onSignedIn: {})
 }
