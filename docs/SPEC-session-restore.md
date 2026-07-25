@@ -50,6 +50,24 @@ There is also no way to sign out.
    anything that was queued.
 4. Offline launch while signed in → still lands on capture (gate is local).
 
+## Follow-up: subject-stamped outbox (deferred)
+
+Sign-out now **clears the outbox** (`CaptureQueue.clearAll`) because records carry
+no account identity, so a capture parked/pending under one identity would
+otherwise be revived by `resumeAfterAuth` and delivered under the next signed-in
+identity's bearer (a cross-account leak an adversarial review caught). Clearing is
+the safe trade but discards unsent captures, and it does not close the narrower
+path where a refresh dies mid-session (no explicit sign-out) and a *different*
+identity then signs in.
+
+The complete fix is to stamp each `CaptureRecord` with the authenticated subject
+(the access token's `sub`, decodable from the JWT with no network) and to
+drain/resume only records matching the currently signed-in subject; on a subject
+change, clear. That preserves same-user captures across a sign-out and closes both
+leak paths. Deferred as its own ticket: it touches the model, the sign-in flow
+(read `sub`), and the queue's drain/resume filters. Not reachable for the current
+single-user (Joe) install, but the right fix before multi-user.
+
 ## Loop-verified core (already covered)
 
 The session-gate and sign-out semantics reduce to `TokenStore` API that
