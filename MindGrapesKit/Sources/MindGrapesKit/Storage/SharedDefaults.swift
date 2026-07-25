@@ -17,6 +17,7 @@ public struct SharedDefaults: @unchecked Sendable {
     enum Key {
         static let serverBaseURL = "serverBaseURL"
         static let includeLocation = "includeLocation"
+        static let locationPitchAnswered = "locationPitchAnswered"
     }
 
     let defaults: UserDefaults
@@ -58,5 +59,21 @@ public struct SharedDefaults: @unchecked Sendable {
         nonmutating set {
             defaults.set(newValue, forKey: Key.includeLocation)
         }
+    }
+
+    /// Whether onboarding has shown the location pitch and recorded an answer
+    /// (#20).
+    ///
+    /// Credentials alone are not enough to call an install onboarded: the OAuth
+    /// sheet writes tokens the moment it succeeds, so a user who backgrounds the
+    /// app on the pitch would come back to a signed-in capture screen having
+    /// never been asked, with ``includeLocation`` sitting at its unset default of
+    /// on. This flag is the second half of the gate.
+    ///
+    /// Unset reads as `false`, which is the safe direction: the worst case is
+    /// asking once more.
+    public var locationPitchAnswered: Bool {
+        get { defaults.bool(forKey: Key.locationPitchAnswered) }
+        nonmutating set { defaults.set(newValue, forKey: Key.locationPitchAnswered) }
     }
 }

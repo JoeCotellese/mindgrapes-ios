@@ -35,6 +35,70 @@ public enum LocationPermission {
         default: .notDetermined
         }
     }
+
+    /// Shows the system prompt and resolves once the user answers.
+    ///
+    /// Onboarding (#20) asks here, with the pitch, rather than letting the first
+    /// capture ambush the user. Awaiting the answer is what makes the location
+    /// toggle honest: firing the request and reading ``status`` on the next line
+    /// would read `notDetermined`, because the user has not tapped anything yet.
+    ///
+    /// An already-answered permission returns immediately: iOS shows the prompt
+    /// once per install, so a second request is a silent no-op that would
+    /// otherwise hang.
+    @MainActor
+    public static func request() async -> Status {
+        guard status == .notDetermined else { return status }
+        return await AuthorizationRequest().run()
+    }
+}
+
+/// One `requestWhenInUseAuthorization()`, bridged to `async`.
+///
+/// Same shape as ``OneShotLocationRequest``: the request holds itself alive
+/// across the callback because `CLLocationManager` holds its delegate weakly,
+/// and `finish` is single-resume so a repeated callback cannot double-resume.
+@MainActor
+private final class AuthorizationRequest: NSObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    private var continuation: CheckedContinuation<LocationPermission.Status, Never>?
+    private var selfHold: AuthorizationRequest?
+
+    func run() async -> LocationPermission.Status {
+        // Cancellation-aware for the same reason ``OneShotLocationRequest`` is: a
+        // `CheckedContinuation` is not on its own, and the prompt can go
+        // unanswered indefinitely (the user backgrounds the app while the alert
+        // is up). Without this the caller's task would hang forever and this
+        // object, its manager, and its `selfHold` would leak for the life of the
+        // process. On cancel we resolve with whatever iOS currently reports,
+        // which for an unanswered prompt is `notDetermined`: the honest answer.
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                self.selfHold = self
+                manager.delegate = self
+                manager.requestWhenInUseAuthorization()
+            }
+        } onCancel: {
+            Task { @MainActor in self.finish(with: LocationPermission.status) }
+        }
+    }
+
+    private func finish(with status: LocationPermission.Status) {
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(returning: status)
+        selfHold = nil
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        MainActor.assumeIsolated {
+            // The delegate fires once on assignment with the pre-answer status;
+            // only a decision resolves the await.
+            guard self.manager.authorizationStatus != .notDetermined else { return }
+            self.finish(with: LocationPermission.status)
+        }
+    }
 }
 
 /// One `CLLocationManager.requestLocation()`, bridged to `async`.
