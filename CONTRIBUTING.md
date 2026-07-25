@@ -64,6 +64,31 @@ would reject without consuming a build number. The API key's `.p8` is copied
 into a private temp directory at run time and deleted on exit, never into the
 repo or your home folder.
 
+### The distribution certificate
+
+Export needs an `Apple Distribution` identity in your login keychain. A
+Development identity is not enough, and the export step's failure does not say
+so plainly: it reports a cloud-signing or provisioning error instead. Check
+what you actually have with `security find-identity -v -p codesigning`.
+
+If no `Apple Distribution` line comes back, mint one. Xcode's Settings >
+Accounts > Manage Certificates > + is the quickest route. The API route, which
+works headless, is a CSR plus one POST:
+
+```sh
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout dist.key -out dist.csr -subj "/CN=Apple Distribution/C=US"
+# POST dist.csr to https://api.appstoreconnect.apple.com/v1/certificates
+# with {"certificateType": "DISTRIBUTION"}, base64-decode the response's
+# certificateContent into dist.cer, then:
+security import dist.key -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
+security import dist.cer -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
+```
+
+Keep `dist.key` somewhere private and backed up. Apple never re-issues it, and
+without it the certificate is worthless. Apple also caps the account at three
+distribution certificates, so revoke before you create a fourth.
+
 ## House rules
 
 - **TDD.** Failing test first, then the minimum code to pass.
