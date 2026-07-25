@@ -9,9 +9,7 @@ struct MindGrapesApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                SignInView()
-            }
+            RootView()
         }
     }
 }
