@@ -9,4 +9,14 @@
 # Bypass with `git push --no-verify` when a push must go out with a known-red or
 # unbuildable tree (a WIP branch, a docs-only fix mid-refactor). The gate is
 # advisory: it does not, and cannot, block a merge on GitHub.
+
+# `/usr/bin/git` is an xcrun shim, so it hands the hook an SDKROOT (plus CPATH
+# and LIBRARY_PATH) pointing at the Command Line Tools SDK. SwiftPM then builds
+# against that SDK while running Xcode's toolchain, and the SwiftData macro
+# plugin goes missing: "external macro implementation type
+# 'SwiftDataMacros.PersistentModelMacro' could not be found". The same `make
+# test-repeat` passes from a normal shell. Drop the leaked vars so the hook
+# builds the way a terminal does.
+unset SDKROOT CPATH LIBRARY_PATH
+
 exec make test-repeat
