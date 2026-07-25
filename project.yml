@@ -42,6 +42,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes
+        # Liquid Glass app icon (Icon Composer .icon bundle, iOS 26). Name must
+        # match MindGrapes.icon in the target sources.
+        ASSETCATALOG_COMPILER_APPICON_NAME: MindGrapes
         CODE_SIGN_ENTITLEMENTS: MindGrapes/MindGrapes.entitlements
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
