@@ -65,8 +65,13 @@ final class WatchCaptureRelay: NSObject {
     /// capture. A relaunch has nothing to announce.
     private var handedOver = 0
 
-    /// The fix taken while the user was dictating. See ``beginCapture()``.
-    private var pendingCoordinate: Coordinate?
+    /// The fix taken while the user was dictating, with the time it was taken.
+    ///
+    /// Timed rather than bare, because nothing clears it when the dictation sheet
+    /// is dismissed without submitting: a coordinate taken at one place would
+    /// otherwise survive in memory and get stamped on a capture made somewhere
+    /// else. See ``TimedCoordinate`` and ``beginCapture()``.
+    private var pendingFix: TimedCoordinate?
     private var locationTask: Task<Void, Never>?
 
     /// Captures made before the session finished activating, held until it does.
@@ -104,19 +109,27 @@ final class WatchCaptureRelay: NSObject {
         session.activate()
     }
 
-    /// Starts the location request when the user taps Capture, before they have
-    /// said anything.
+    /// Starts the location request before the user has said anything.
     ///
     /// The alternative — asking for a fix at submit time — forces a choice between
     /// waiting on CoreLocation (during which watchOS may suspend the app, and the
     /// capture is lost because it never reached the outbox) and handing over with no
-    /// location at all. Dictating takes seconds, so starting the request when the
-    /// sheet opens usually has a fix ready by the time the text comes back, and
-    /// ``submit(_:)`` never waits for one.
+    /// location at all. Dictating takes seconds, so starting the request early
+    /// usually has a fix ready by the time the text comes back, and ``submit(_:)``
+    /// never waits for one.
+    ///
+    /// Called both when the screen appears and when the Capture button is tapped,
+    /// and that pair is deliberate. The tap alone was a `TapGesture`, which
+    /// VoiceOver activation does not fire — it sends an accessibility activate
+    /// action instead — so VoiceOver users silently never got a location on a
+    /// watch capture. The appearance call covers them and the first capture; the
+    /// tap refreshes the fix for later ones, since the screen does not reappear
+    /// between captures. Calling twice is free: this cancels any request already
+    /// running.
     func beginCapture() {
         locationTask?.cancel()
         locationTask = nil
-        pendingCoordinate = nil
+        pendingFix = nil
 
         // No fix, and no permission prompt, unless the user asked for located
         // captures on the phone. The toggle lives in App Group UserDefaults the Watch
@@ -130,8 +143,8 @@ final class WatchCaptureRelay: NSObject {
         // coordinate when it receives the handoff (SPEC 9, #22).
         locationTask = Task { [location] in
             let coordinate = await location.currentCoordinate()
-            guard !Task.isCancelled else { return }
-            pendingCoordinate = coordinate
+            guard !Task.isCancelled, let coordinate else { return }
+            pendingFix = TimedCoordinate(coordinate: coordinate, takenAt: Date())
         }
     }
 
@@ -157,15 +170,23 @@ final class WatchCaptureRelay: NSObject {
             return
         }
 
-        let coordinate = pendingCoordinate
-        pendingCoordinate = nil
+        // Dropped rather than used if it has gone stale: an abandoned capture
+        // leaves its fix behind, and a coordinate from somewhere the user no longer
+        // is would be worse than no coordinate at all, which SPEC 9 already treats
+        // as normal.
+        let now = Date()
+        let coordinate = pendingFix?.coordinate(asOf: now)
+        if pendingFix != nil, coordinate == nil {
+            log.notice("dropped a stale location fix rather than stamping it on a capture")
+        }
+        pendingFix = nil
         locationTask?.cancel()
         locationTask = nil
 
         // Unreachable while this check and `nonBlank` trim the same character set,
         // and kept anyway so a future change to either one fails closed.
         guard let payload = WatchCapturePayload(
-            id: UUID(), content: text, occurredAt: Date(), coordinate: coordinate
+            id: UUID(), content: text, occurredAt: now, coordinate: coordinate
         ) else {
             status = .nothingHeard
             decayToDerived(after: .seconds(4))
