@@ -71,6 +71,76 @@ struct CaptureQueueTests {
         #expect(persisted.first?.id == snapshot.id)
     }
 
+    // MARK: - Enqueue under a caller's id (watch relay, SPEC 8.1)
+
+    /// The Watch stamps the id on the wrist so a redelivered `transferUserInfo`
+    /// enqueues the same `idempotency_key` rather than a second capture.
+    @Test func enqueueUnderACallerIDKeepsThatID() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let id = UUID()
+
+        let outcome = try await queue.enqueue(note: note(), id: id)
+
+        #expect(outcome == .inserted)
+        let persisted = try fixture.directContext().fetch(FetchDescriptor<CaptureRecord>())
+        #expect(persisted.map(\.id) == [id])
+    }
+
+    @Test func enqueuingTheSameIDTwiceLeavesOneRecord() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let id = UUID()
+
+        _ = try await queue.enqueue(note: note("first"), id: id)
+        let second = try await queue.enqueue(note: note("second"), id: id)
+
+        #expect(second == .duplicate)
+        let persisted = try fixture.directContext().fetch(FetchDescriptor<CaptureRecord>())
+        #expect(persisted.count == 1)
+        #expect(persisted.first?.content == "first")
+    }
+
+    /// The reason this is an explicit existence check and not SwiftData's
+    /// unique-constraint upsert. A redelivery can arrive after the capture has
+    /// already been delivered; an upsert would reset a `succeeded` record to
+    /// `pending` and send it again, and the second send would create a second
+    /// experience server-side because the server does not honor
+    /// `idempotency_key` yet (SPEC 6.5, server task 3).
+    @Test func enqueuingAnAlreadySettledIDDoesNotDisturbIt() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let id = UUID()
+
+        _ = try await queue.enqueue(note: note("first"), id: id)
+        try await queue.markSucceeded(id: id, experienceID: "exp-1")
+
+        let outcome = try await queue.enqueue(note: note("redelivered"), id: id)
+
+        #expect(outcome == .duplicate)
+        let snapshot = try #require(try await queue.snapshot(id: id))
+        #expect(snapshot.state == .succeeded)
+        #expect(snapshot.experienceID == "exp-1")
+        #expect(snapshot.attemptCount == 0)
+    }
+
+    /// A redelivery arriving mid-send must not reset the record the drain pass is
+    /// currently holding, which is the other half of the upsert hazard above.
+    @Test func enqueuingAnInFlightIDDoesNotResetIt() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let id = UUID()
+
+        _ = try await queue.enqueue(note: note("first"), id: id)
+        _ = try await queue.claimDue()
+
+        let outcome = try await queue.enqueue(note: note("redelivered"), id: id)
+
+        #expect(outcome == .duplicate)
+        let snapshot = try #require(try await queue.snapshot(id: id))
+        #expect(snapshot.state == .inFlight)
+    }
+
     // MARK: - Draining
 
     @Test func claimDueReturnsDueRecordsOldestFirstAndMarksThemInFlight() async throws {
