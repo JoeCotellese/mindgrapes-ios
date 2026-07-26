@@ -64,6 +64,11 @@ struct CaptureView: View {
             Toggle("Include location", isOn: $includeLocation)
                 .onChange(of: includeLocation) { _, on in
                     SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation = on
+                    // The Watch cannot read this App Group, so the value has to be
+                    // pushed. Without this it reached the wrist only on the next
+                    // activation or foreground, and a user who turned location on
+                    // and then raised their wrist captured without one.
+                    WatchSessionCoordinator.shared.pushSettings()
                 }
 
             Text(status)

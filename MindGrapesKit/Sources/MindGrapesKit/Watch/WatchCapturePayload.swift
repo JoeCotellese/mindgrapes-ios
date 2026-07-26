@@ -30,22 +30,70 @@ public struct WatchCapturePayload: Sendable, Equatable {
     public let occurredAt: Date
     public let coordinate: Coordinate?
 
+    /// Which hand-off of this capture this transfer is, counting from 1.
+    ///
+    /// **Rides in the payload rather than in the sender, and that is the whole
+    /// point.** `WCSession` drops a transfer that finishes with an error and never
+    /// retries it, so re-handing the payload from `didFinish` is the only thing
+    /// standing between an errored transfer and a lost capture. But watchOS
+    /// terminates watch apps on wrist-down, and a completion callback for a
+    /// transfer queued in one launch routinely arrives in the next one — so a
+    /// retry budget held in memory by the sender resets every time the wrist
+    /// drops, and a permanently broken pairing re-hands the same capture forever
+    /// without the user ever being told. Carried here, the budget survives
+    /// exactly as long as the capture does.
+    public let attempt: Int
+
+    /// Total hand-offs allowed per capture: the original and one retry.
+    ///
+    /// Bounded low on purpose. The errors that reach `didFinish` (an unpaired
+    /// Watch, a counterpart app removed mid-transfer) are not the transient kind
+    /// a network blip produces, so more attempts would buy nothing and would keep
+    /// the wrist from telling the user the one thing they can act on.
+    public static let maximumAttempts = 2
+
     private enum Key {
         static let id = "id"
         static let content = "content"
         static let occurredAt = "occurredAt"
         static let latitude = "latitude"
         static let longitude = "longitude"
+        static let attempt = "attempt"
     }
 
     /// Returns `nil` when `content` is empty or whitespace only, matching
     /// ``NoteDraft``: an empty capture never becomes a transfer.
-    public init?(id: UUID, content: String, occurredAt: Date, coordinate: Coordinate?) {
+    public init?(
+        id: UUID,
+        content: String,
+        occurredAt: Date,
+        coordinate: Coordinate?,
+        attempt: Int = 1
+    ) {
         guard let content = content.nonBlank else { return nil }
         self.id = id
         self.content = content
         self.occurredAt = occurredAt
         self.coordinate = coordinate
+        self.attempt = max(1, attempt)
+    }
+
+    /// The same capture, marked as one more hand-off, or `nil` when it has used
+    /// its budget and is genuinely gone.
+    ///
+    /// A redelivery costs nothing when it turns out the original landed after
+    /// all: the capture carries its own `id`, and
+    /// ``CaptureQueue/enqueue(note:id:now:)`` recognises an id it already holds
+    /// and does nothing.
+    public func retried() -> WatchCapturePayload? {
+        guard attempt < Self.maximumAttempts else { return nil }
+        return WatchCapturePayload(
+            id: id,
+            content: content,
+            occurredAt: occurredAt,
+            coordinate: coordinate,
+            attempt: attempt + 1
+        )
     }
 
     /// The dictionary handed to `transferUserInfo`.
@@ -54,6 +102,7 @@ public struct WatchCapturePayload: Sendable, Equatable {
             Key.id: id.uuidString,
             Key.content: content,
             Key.occurredAt: occurredAt,
+            Key.attempt: attempt,
         ]
         if let coordinate {
             userInfo[Key.latitude] = coordinate.latitude
@@ -92,7 +141,17 @@ public struct WatchCapturePayload: Sendable, Equatable {
                 nil
             }
 
-        self.init(id: id, content: content, occurredAt: occurredAt, coordinate: coordinate)
+        // Absent means first attempt, so a payload built by a watch that predates
+        // this key still decodes rather than being refused.
+        let attempt = userInfo[Key.attempt] as? Int ?? 1
+
+        self.init(
+            id: id,
+            content: content,
+            occurredAt: occurredAt,
+            coordinate: coordinate,
+            attempt: attempt
+        )
     }
 
     /// The note this becomes on the phone, with the label the phone supplied.

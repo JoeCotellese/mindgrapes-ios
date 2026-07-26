@@ -148,4 +148,103 @@ struct WatchCapturePayloadTests {
 
         #expect(WatchCapturePayload(userInfo: userInfo) == payload)
     }
+
+    // MARK: - The retry budget (#29)
+
+    @Test("A fresh capture is its own first attempt")
+    func firstAttemptIsOne() throws {
+        let payload = try #require(
+            WatchCapturePayload(id: id, content: "text", occurredAt: occurredAt, coordinate: nil)
+        )
+
+        #expect(payload.attempt == 1)
+    }
+
+    /// The budget has to survive the transfer, not just the process: watchOS
+    /// terminates the watch app on wrist-down, and a `didFinish` for a transfer
+    /// queued in one launch routinely arrives in the next. A counter held in
+    /// memory by the sender would reset every time the wrist dropped.
+    ///
+    /// Serialized through `PropertyListSerialization` rather than round-tripped in
+    /// memory, because in-memory is trivially lossless and would pass for a type
+    /// the plist encoder mangles. The failure this guards against is specific and
+    /// bad: an `attempt` that decoded as 1 every time would make `retried()`
+    /// always succeed, restoring the unbounded re-hand this whole change exists
+    /// to prevent.
+    @Test("The attempt count survives property-list encoding, not just memory")
+    func attemptSurvivesPropertyListEncoding() throws {
+        let payload = try #require(
+            WatchCapturePayload(id: id, content: "text", occurredAt: occurredAt, coordinate: nil)
+        )
+        let second = try #require(payload.retried())
+
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: second.userInfo, format: .binary, options: 0
+        )
+        let revived = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+        let decoded = try #require(WatchCapturePayload(userInfo: revived))
+
+        #expect(decoded.attempt == 2)
+        #expect(decoded == second)
+        #expect(decoded.retried() == nil)
+    }
+
+    @Test("A retry keeps every other field identical")
+    func retryChangesNothingElse() throws {
+        let coordinate = Coordinate(latitude: 10, longitude: 20)
+        let payload = try #require(
+            WatchCapturePayload(id: id, content: "text", occurredAt: occurredAt, coordinate: coordinate)
+        )
+
+        let second = try #require(payload.retried())
+
+        #expect(second.id == payload.id)
+        #expect(second.content == payload.content)
+        #expect(second.occurredAt == payload.occurredAt)
+        #expect(second.coordinate == payload.coordinate)
+    }
+
+    /// The bound. Without it a permanently broken pairing re-hands the same
+    /// capture forever and the wrist never gets to say it is gone.
+    @Test("A capture gets one retry and no more")
+    func retryIsBoundedAtOne() throws {
+        let payload = try #require(
+            WatchCapturePayload(id: id, content: "text", occurredAt: occurredAt, coordinate: nil)
+        )
+
+        let second = try #require(payload.retried())
+
+        #expect(second.attempt == WatchCapturePayload.maximumAttempts)
+        #expect(second.retried() == nil)
+    }
+
+    /// watchOS and iOS update independently, so a wrist running a build that
+    /// predates this key must still be understood rather than refused.
+    @Test("A payload with no attempt key is treated as a first attempt")
+    func missingAttemptDefaultsToFirst() throws {
+        let payload = try #require(
+            WatchCapturePayload(id: id, content: "text", occurredAt: occurredAt, coordinate: nil)
+        )
+        var userInfo = payload.userInfo
+        userInfo.removeValue(forKey: "attempt")
+
+        let decoded = try #require(WatchCapturePayload(userInfo: userInfo))
+
+        #expect(decoded.attempt == 1)
+        #expect(decoded.retried() != nil)
+    }
+
+    /// A nonsense count must not hand a capture an unlimited budget.
+    @Test("An attempt below one is clamped rather than trusted")
+    func nonsenseAttemptIsClamped() throws {
+        let payload = try #require(
+            WatchCapturePayload(
+                id: id, content: "text", occurredAt: occurredAt, coordinate: nil, attempt: -5
+            )
+        )
+
+        #expect(payload.attempt == 1)
+    }
 }

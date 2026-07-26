@@ -40,8 +40,11 @@ public enum WristStatus: Equatable, Sendable {
     /// guarantee of good health.
     case withPhone
 
-    /// `count` transfers finished with an error and will not retry on their own.
-    /// The wrist cannot fix this, so the line names the one thing the user can do.
+    /// `count` captures failed, were handed back to the outbox once, and failed
+    /// again. They are gone: `transferUserInfo` does not retry an errored transfer
+    /// on its own, and ``WatchCapturePayload/maximumAttempts`` allows exactly one
+    /// more. The line names the only thing that recovers them, which is capturing
+    /// again.
     case failed(count: Int)
 
     /// The phone has no MindGrapes app, so nothing handed over will ever be taken.
@@ -71,25 +74,41 @@ public enum WristStatus: Equatable, Sendable {
     ///
     /// - Parameters:
     ///   - outstanding: `WCSession.outstandingUserInfoTransfers.count`.
-    ///   - failed: transfers that came back with a non-nil error and were not
-    ///     retried.
+    ///   - failed: transfers that came back with a non-nil error and have no
+    ///     retry left. A first failure is re-handed rather than counted here, so
+    ///     this only ever means "gone".
+    ///   - handedOver: captures handed to the outbox since this app launched.
+    ///     Distinguishes "everything arrived" from "nothing ever happened", which
+    ///     an outstanding count of zero cannot do on its own — see #28.
     ///   - phoneNearby: `WCSession.isReachable`.
     ///   - companionAppInstalled: `WCSession.isCompanionAppInstalled`.
     public static func derive(
         outstanding: Int,
         failed: Int,
+        handedOver: Int = 0,
         phoneNearby: Bool = true,
         companionAppInstalled: Bool = true
     ) -> WristStatus {
-        // Ordered by what the user can act on, most actionable first. A missing
-        // counterpart app is terminal for every capture, not just the ones counted
-        // here, so it wins outright.
+        // A missing counterpart app is terminal for every capture, not just the
+        // ones counted here, so it wins outright.
         guard companionAppInstalled else { return .companionAppMissing }
 
-        // Clamped because a hand-maintained failure counter that double-decrements
-        // would otherwise render "-1 waiting for the phone".
-        if failed > 0 { return .failed(count: failed) }
+        // Before the loss, deliberately. `failed` means "gone, capture it again",
+        // and giving that instruction while another transfer is still in flight
+        // makes the user re-dictate something that was never lost — under a fresh
+        // id, so the phone stores a real duplicate. The loss is durable
+        // (``LostCaptureLog``) and surfaces as soon as it is the only news.
         if outstanding > 0 { return .waiting(count: outstanding, phoneNearby: phoneNearby) }
-        return .withPhone
+        if failed > 0 { return .failed(count: failed) }
+
+        // Nothing outstanding, nothing lost. Whether that is good news depends
+        // entirely on whether anything was ever handed over: without `handedOver`
+        // this returned `.withPhone`, so a bare reachability change on an idle app
+        // announced a delivery that never happened (#28).
+        //
+        // Negative counts cannot come from `outstandingUserInfoTransfers`, but a
+        // hand-maintained counter could produce one, and it falls through to here
+        // rather than rendering "-1 waiting for the phone".
+        return handedOver > 0 ? .withPhone : .ready
     }
 }

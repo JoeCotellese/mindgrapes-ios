@@ -21,20 +21,57 @@ private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "watch
 /// This type is deliberately thin. `WCSession` has no injectable seam and no
 /// behaviour without a paired counterpart, and the watch target has no test target
 /// (#24), so the decisions live in `MindGrapesKit` where they are tested:
-/// ``WristStatus/derive(outstanding:failed:phoneNearby:companionAppInstalled:)``
+/// ``WristStatus/derive(outstanding:failed:handedOver:phoneNearby:companionAppInstalled:)``
 /// and ``WatchCapturePayload``.
 @MainActor
 @Observable
 final class WatchCaptureRelay: NSObject {
     private(set) var status: WristStatus = .activating
 
-    /// Transfers that came back with an error. Counted separately because a failed
-    /// transfer is removed from `outstandingUserInfoTransfers` exactly like a
-    /// successful one, so the outbox emptying is not evidence of success.
-    private var failures = 0
+    /// Transfers that came back with an error and have no retry left. Counted
+    /// separately because a failed transfer is removed from
+    /// `outstandingUserInfoTransfers` exactly like a successful one, so the outbox
+    /// emptying is not evidence of success.
+    ///
+    /// Captures that are actually gone. A first failure is re-handed rather than
+    /// recorded, so the status line never reports a loss the relay is still
+    /// working on.
+    ///
+    /// **Durable, and that is load-bearing.** The final failure of a capture is
+    /// usually delivered to a background relaunch with the screen facing nobody,
+    /// and watchOS terminates the app again moments later — so an in-memory count
+    /// would be discarded before it was ever rendered and the user would never
+    /// learn the capture was gone. See ``LostCaptureLog``.
+    ///
+    /// Deliberately *not* cleared by a later successful transfer. A lost capture
+    /// stays lost, and a success on some other capture is not news about it: the
+    /// old behaviour let capture B's success erase the report that capture A was
+    /// gone, which is the same class of false claim ``WristStatus`` exists to
+    /// prevent. It clears when the user captures again, because that is the one
+    /// instruction the line gives them.
+    private let lost = LostCaptureLog()
 
-    /// The fix taken while the user was dictating. See ``beginCapture()``.
-    private var pendingCoordinate: Coordinate?
+    /// Captures handed to the outbox since launch and not yet reported as arrived.
+    ///
+    /// Exists so ``WristStatus/derive(outstanding:failed:handedOver:phoneNearby:companionAppInstalled:)``
+    /// can tell "everything arrived" apart from "nothing ever happened". An empty
+    /// outbox looks identical in both cases, which is how a bare reachability
+    /// change used to print "With the phone" about a capture that never existed
+    /// (#28). Spent when that report decays, which is what stops it standing as a
+    /// permanent claim of good health.
+    ///
+    /// In memory rather than durable, unlike ``lost``, and correctly so: this
+    /// describes an event being shown to the user right now, not a fact about a
+    /// capture. A relaunch has nothing to announce.
+    private var handedOver = 0
+
+    /// The fix taken while the user was dictating, with the time it was taken.
+    ///
+    /// Timed rather than bare, because nothing clears it when the dictation sheet
+    /// is dismissed without submitting: a coordinate taken at one place would
+    /// otherwise survive in memory and get stamped on a capture made somewhere
+    /// else. See ``TimedCoordinate`` and ``beginCapture()``.
+    private var pendingFix: TimedCoordinate?
     private var locationTask: Task<Void, Never>?
 
     /// Captures made before the session finished activating, held until it does.
@@ -72,19 +109,38 @@ final class WatchCaptureRelay: NSObject {
         session.activate()
     }
 
-    /// Starts the location request when the user taps Capture, before they have
-    /// said anything.
+    /// Starts the location request before the user has said anything.
     ///
     /// The alternative — asking for a fix at submit time — forces a choice between
     /// waiting on CoreLocation (during which watchOS may suspend the app, and the
     /// capture is lost because it never reached the outbox) and handing over with no
-    /// location at all. Dictating takes seconds, so starting the request when the
-    /// sheet opens usually has a fix ready by the time the text comes back, and
-    /// ``submit(_:)`` never waits for one.
+    /// location at all. Dictating takes seconds, so starting the request early
+    /// usually has a fix ready by the time the text comes back, and ``submit(_:)``
+    /// never waits for one.
+    ///
+    /// Called from the Capture button's tap, from `activationDidCompleteWith`, and
+    /// whenever the phone pushes a new application context.
+    ///
+    /// The tap alone is not enough: it is a `TapGesture`, and VoiceOver activation
+    /// does not fire one — it sends an accessibility activate action — so VoiceOver
+    /// users silently never got a location at all. Nor is view appearance enough,
+    /// which was the first attempt: it runs before `WCSession.activate()` has
+    /// completed, so `receivedApplicationContext` is still empty, the guard below
+    /// returns, and nothing retries. The session's own callbacks are the only
+    /// moments when the answer is actually knowable.
+    ///
+    /// Calling it repeatedly is cheap and safe: a fix that is still fresh is kept
+    /// rather than thrown away and re-requested, which matters because CoreLocation
+    /// on a watch indoors can take ten seconds or more.
     func beginCapture() {
+        // Keep a good fix. Restarting unconditionally meant a tap three seconds
+        // after the app opened discarded the fix that had just landed and started
+        // the clock again, so the warm-up bought nothing.
+        if let pendingFix, pendingFix.coordinate(asOf: Date()) != nil { return }
+
         locationTask?.cancel()
         locationTask = nil
-        pendingCoordinate = nil
+        pendingFix = nil
 
         // No fix, and no permission prompt, unless the user asked for located
         // captures on the phone. The toggle lives in App Group UserDefaults the Watch
@@ -98,8 +154,8 @@ final class WatchCaptureRelay: NSObject {
         // coordinate when it receives the handoff (SPEC 9, #22).
         locationTask = Task { [location] in
             let coordinate = await location.currentCoordinate()
-            guard !Task.isCancelled else { return }
-            pendingCoordinate = coordinate
+            guard !Task.isCancelled, let coordinate else { return }
+            pendingFix = TimedCoordinate(coordinate: coordinate, takenAt: Date())
         }
     }
 
@@ -109,23 +165,52 @@ final class WatchCaptureRelay: NSObject {
     /// discover a capture was empty, the wrist would already have reported a handoff
     /// that never happened.
     func submit(_ text: String) {
+        // A new capture attempt ends the previous one's report. Without this, a
+        // blank dictation two seconds after a successful hand-off decays back into
+        // "With the phone" — an announcement about the earlier capture, resurrected
+        // by the failure of this one.
+        handedOver = 0
+
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             status = .nothingHeard
             log.notice("dictation returned nothing usable; no transfer")
+            // Set without consulting `derive`, so left standing it would hide a
+            // pending loss report indefinitely — no WCSession callback is
+            // guaranteed to arrive and recompute it.
+            decayToDerived(after: .seconds(4))
             return
         }
 
-        let coordinate = pendingCoordinate
-        pendingCoordinate = nil
+        // Dropped rather than used if it has gone stale: an abandoned capture
+        // leaves its fix behind, and a coordinate from somewhere the user no longer
+        // is would be worse than no coordinate at all, which SPEC 9 already treats
+        // as normal.
+        let now = Date()
+        let coordinate = pendingFix?.coordinate(asOf: now)
+        if pendingFix != nil, coordinate == nil {
+            log.notice("dropped a stale location fix rather than stamping it on a capture")
+        }
+        pendingFix = nil
         locationTask?.cancel()
         locationTask = nil
 
+        // Unreachable while this check and `nonBlank` trim the same character set,
+        // and kept anyway so a future change to either one fails closed.
         guard let payload = WatchCapturePayload(
-            id: UUID(), content: text, occurredAt: Date(), coordinate: coordinate
+            id: UUID(), content: text, occurredAt: now, coordinate: coordinate
         ) else {
             status = .nothingHeard
+            decayToDerived(after: .seconds(4))
             return
         }
+
+        // Cleared only when the loss report is the thing on screen right now, which
+        // is the only case where capturing again is plausibly the user acting on
+        // it. Clearing on every capture would discard a loss the user was never
+        // shown: `waiting` outranks `failed`, so a loss recorded while other
+        // transfers are still in flight stays queued behind them, and an
+        // unconditional clear here would destroy it before it ever rendered.
+        if case .failed = status { lost.clear() }
 
         handOver(payload)
 
@@ -145,6 +230,7 @@ final class WatchCaptureRelay: NSObject {
             return
         }
         session.transferUserInfo(payload.userInfo)
+        handedOver += 1
         log.notice("handed \(payload.id, privacy: .public) to the outbox, coordinate: \(payload.coordinate != nil)")
     }
 
@@ -166,37 +252,62 @@ final class WatchCaptureRelay: NSObject {
             return
         }
 
+        let outstanding = session.outstandingUserInfoTransfers.count
+
+        // A transfer inherited from a previous launch is itself evidence something
+        // was handed over. watchOS terminates this app on wrist-down and the outbox
+        // survives, so without this a capture made before the app was killed
+        // completes into `.ready` — the neutral first-launch line — and reads as if
+        // it had evaporated.
+        handedOver = max(handedOver, outstanding)
+
         let derived = WristStatus.derive(
-            outstanding: session.outstandingUserInfoTransfers.count,
-            failed: failures,
+            outstanding: outstanding,
+            failed: lost.count,
+            handedOver: handedOver,
             phoneNearby: session.isReachable,
             companionAppInstalled: session.isCompanionAppInstalled
         )
 
-        // `withPhone` describes one past event. Left standing it reads as a guarantee
-        // of good health in the exact screen position where every other app prints
-        // "Saved", so it decays to the neutral line.
-        guard derived == .withPhone else {
-            status = derived
-            return
+        let previous = status
+        status = derived
+
+        // `withPhone` describes one past event. Left standing it reads as a
+        // guarantee of good health in the exact screen position where every other
+        // app prints "Saved", so it decays to the neutral line.
+        //
+        // The old version of this inferred "nothing was handed over" from the
+        // status still being `.activating`, which was wrong the moment anything
+        // else re-derived — a bare reachability change on an idle app printed
+        // "With the phone" about a capture that never existed (#28). `derive` now
+        // takes `handedOver` and answers that itself.
+        // On the transition only. Re-arming on every derivation lets a flapping
+        // phone — reachability changes faster than ten seconds in ordinary use —
+        // keep "With the phone" on screen indefinitely, which is the standing
+        // claim of good health this decay exists to prevent.
+        if derived == .withPhone, previous != .withPhone {
+            decayToDerived(after: .seconds(10))
         }
-        if status == .activating {
-            // Nothing was handed over this session; there is no event to report.
-            status = .ready
-            return
-        }
-        status = .withPhone
-        expireWithPhone()
     }
 
     private var expiry: Task<Void, Never>?
 
-    private func expireWithPhone() {
+    /// Lets a status that describes a moment fall back to whatever is true after
+    /// it. Used by `.withPhone` and by ``submit(_:)``'s `.nothingHeard`, both of
+    /// which are announcements rather than states — and `.nothingHeard` in
+    /// particular is set without consulting `derive`, so left standing it hides a
+    /// loss the user still needs to see.
+    private func decayToDerived(after duration: Duration) {
         expiry?.cancel()
+        let expiring = status
         expiry = Task {
-            try? await Task.sleep(for: .seconds(10))
-            guard !Task.isCancelled, status == .withPhone else { return }
-            status = .ready
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled, status == expiring else { return }
+            // Spending the hand-off is what lets `derive` return `.ready` on the
+            // next pass. Without it the recompute would produce `.withPhone` again
+            // and re-arm this timer forever.
+            if expiring == .withPhone { handedOver = 0 }
+            refreshStatus()
         }
     }
 }
@@ -219,7 +330,22 @@ extension WatchCaptureRelay: WCSessionDelegate {
         Task { @MainActor in
             self.flushHeld()
             self.refreshStatus()
+            // The first moment `receivedApplicationContext` is readable, so the
+            // first moment a location request can legitimately start.
+            self.beginCapture()
         }
+    }
+
+    /// The phone's answer about location, arriving while the app is already up.
+    ///
+    /// Without this the wrist samples the toggle only at ``beginCapture()`` time,
+    /// so a user who turned location on over on the phone would not be honoured
+    /// until the next tap — or, for a VoiceOver user, not at all in this app run.
+    nonisolated func session(
+        _ session: WCSession,
+        didReceiveApplicationContext applicationContext: [String: Any]
+    ) {
+        Task { @MainActor in self.beginCapture() }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
@@ -231,32 +357,47 @@ extension WatchCaptureRelay: WCSessionDelegate {
     }
 
     /// The outbox emptying is not success. A transfer that finishes *with* an error
-    /// is removed from `outstandingUserInfoTransfers` exactly like a successful one,
-    /// so the error is what decides and it is counted rather than inspected later.
+    /// is removed from `outstandingUserInfoTransfers` exactly like a successful one
+    /// and the system will not try it again, so the error is what decides.
+    ///
+    /// The payload comes back with the callback, which is the only reason a lost
+    /// capture is recoverable at all: it is handed back to the outbox once before
+    /// the wrist gives up and says so. A redelivery costs nothing, because the
+    /// payload carries its own id and the phone's queue recognises one it has
+    /// already stored.
     nonisolated func session(
         _ session: WCSession,
         didFinish userInfoTransfer: WCSessionUserInfoTransfer,
         error: (any Error)?
     ) {
-        let failed = error != nil
-        if let error {
-            log.error("transfer failed: \(error.localizedDescription, privacy: .public)")
+        guard let error else {
+            Task { @MainActor in self.refreshStatus() }
+            return
         }
+
+        log.error("transfer failed: \(error.localizedDescription, privacy: .public)")
+
+        // Parsed out here, synchronously, because `[String: Any]` is not Sendable
+        // and cannot cross into the Task. The payload can.
+        let spent = WatchCapturePayload(userInfo: userInfoTransfer.userInfo)
+        let again = spent?.retried()
+
         Task { @MainActor in
-            if failed {
-                self.failures += 1
+            guard let again else {
+                // Out of budget, or the payload came back unreadable. Either way
+                // this capture is gone and the wrist has to say so. Recorded under
+                // the capture's own id where one survived the parse, so a
+                // redelivered completion cannot inflate the count.
+                self.lost.record(spent?.id ?? UUID())
                 WKInterfaceDevice.current().play(.failure)
-            } else {
-                // A clean transfer clears the count. Left monotonic, one failure
-                // pins the wrist on "Not handed off. Open the phone app." for the
-                // rest of the process — including for captures that did land,
-                // which trains the user to disbelieve the only signal they get.
-                //
-                // ponytail: a whole-count reset, so with two transfers in flight a
-                // success can clear a sibling's failure before the user has read
-                // it. Track unresolved transfer ids instead if that becomes real.
-                self.failures = 0
+                self.refreshStatus()
+                return
             }
+            log.notice("re-handing \(again.id, privacy: .public), attempt \(again.attempt)")
+            // Through handOver rather than straight to the session, so the retry
+            // gets the same activation guard every other send has: transferUserInfo
+            // raises on a session that is not activated, with nothing to catch.
+            self.handOver(again)
             self.refreshStatus()
         }
     }

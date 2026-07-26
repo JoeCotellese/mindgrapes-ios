@@ -84,6 +84,10 @@ public struct WatchCaptureReceiver: Sendable {
         do {
             outcome = try await queue.enqueue(note: draft, id: payload.id, now: now)
         } catch {
+            // Unrecoverable: `transferUserInfo` does not redeliver, so a capture
+            // that cannot be written is gone. `reason` stays a short stable code
+            // by contract, so the underlying error is dropped here — see #33 for
+            // carrying it out to the caller's log.
             return .rejected(reason: "save_failed")
         }
 

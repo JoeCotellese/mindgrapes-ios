@@ -46,6 +46,13 @@ struct WristCaptureView: View {
                 // TextFieldLink offers no will-present hook, and a plain tap gesture
                 // would swallow the press the button needs. Simultaneous is what
                 // lets both happen.
+                //
+                // Not sufficient on its own: VoiceOver activation is an
+                // accessibility activate action, not a tap, so this never fires for
+                // a VoiceOver user. `WatchCaptureRelay` covers that by starting the
+                // request from the session's own callbacks instead, which is also
+                // the only place the phone's answer is knowable. This stays as the
+                // refresh for a sighted user's second and later captures.
                 .simultaneousGesture(TapGesture().onEnded { beginCapture() })
                 // Tint comes from the target's AccentColor asset, which carries the
                 // app icon's own colour. Without it a prominent button resolves to

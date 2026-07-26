@@ -9,9 +9,21 @@ import Testing
 /// that produces it is tested here rather than trusted in a view.
 @Suite
 struct WristStatusTests {
-    @Test("Nothing outstanding and nothing failed means the phone took everything")
-    func emptyOutboxIsWithPhone() {
-        #expect(WristStatus.derive(outstanding: 0, failed: 0) == .withPhone)
+    /// The bug this test was rewritten for (#28). "Nothing outstanding" was being
+    /// asked to mean both "nothing ever happened" and "everything arrived", and it
+    /// resolved to the second — so bringing the phone into range with the app idle
+    /// fired `sessionReachabilityDidChange`, re-derived, and printed "With the
+    /// phone" about a capture that was never taken.
+    @Test("An empty outbox with nothing ever handed over is ready, not with the phone")
+    func emptyOutboxWithNoHandoffIsReady() {
+        let status = WristStatus.derive(outstanding: 0, failed: 0, handedOver: 0)
+        #expect(status == .ready)
+        #expect(status != .withPhone)
+    }
+
+    @Test("An empty outbox after a hand-off means the phone took everything")
+    func emptyOutboxAfterAHandoffIsWithPhone() {
+        #expect(WristStatus.derive(outstanding: 0, failed: 0, handedOver: 1) == .withPhone)
     }
 
     @Test("One outstanding transfer is one capture waiting")
@@ -41,11 +53,34 @@ struct WristStatusTests {
         #expect(status != .withPhone)
     }
 
-    /// A failure outranks a pending transfer because it is the only one of the two
-    /// the user can act on: the pending one needs nothing but patience.
-    @Test("A failure outranks a still-pending transfer")
-    func failureOutranksWaiting() {
-        #expect(WristStatus.derive(outstanding: 1, failed: 1) == .failed(count: 1))
+    /// Reversed in #28, because `failed` changed meaning in #29. It used to mean
+    /// "a transfer errored"; it now means "this capture is permanently gone, so
+    /// capture it again". Telling the user to capture again while another transfer
+    /// is still in flight makes them re-dictate a capture that was never lost, and
+    /// the re-dictation gets a fresh id, so the phone stores a genuine duplicate.
+    ///
+    /// The loss is not dropped, only deferred: ``LostCaptureLog`` is durable, so it
+    /// renders as soon as it is the only news.
+    @Test("A pending transfer outranks a loss, so the advice is never premature")
+    func waitingOutranksFailureWhileSomethingIsInFlight() {
+        #expect(
+            WristStatus.derive(outstanding: 1, failed: 1)
+                == .waiting(count: 1, phoneNearby: true)
+        )
+    }
+
+    @Test("The loss surfaces once the outbox is empty")
+    func failureSurfacesWhenNothingIsInFlight() {
+        #expect(WristStatus.derive(outstanding: 0, failed: 1) == .failed(count: 1))
+    }
+
+    /// A loss is a fact about a capture, not about the session, so a later
+    /// hand-off must not bury it.
+    @Test("A hand-off since the loss does not turn the loss into success")
+    func handoffDoesNotEraseALoss() {
+        let status = WristStatus.derive(outstanding: 0, failed: 1, handedOver: 3)
+        #expect(status == .failed(count: 1))
+        #expect(status != .withPhone)
     }
 
     @Test("Counts are carried through so the line can say how many")
@@ -81,9 +116,10 @@ struct WristStatusTests {
     /// Negative input cannot come from `outstandingUserInfoTransfers.count`, but a
     /// hand-maintained failure counter that double-decrements could produce it, and
     /// `.waiting(count: -1)` would render "-1 waiting for the phone".
-    @Test("Nonsense counts clamp rather than render")
-    func negativeCountsClamp() {
-        #expect(WristStatus.derive(outstanding: -1, failed: 0) == .withPhone)
-        #expect(WristStatus.derive(outstanding: 0, failed: -1) == .withPhone)
+    @Test("Nonsense counts fall through rather than render")
+    func negativeCountsFallThrough() {
+        #expect(WristStatus.derive(outstanding: -1, failed: 0, handedOver: 0) == .ready)
+        #expect(WristStatus.derive(outstanding: 0, failed: -1, handedOver: 0) == .ready)
+        #expect(WristStatus.derive(outstanding: -1, failed: 0, handedOver: 1) == .withPhone)
     }
 }

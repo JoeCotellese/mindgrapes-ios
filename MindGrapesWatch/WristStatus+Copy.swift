@@ -31,10 +31,13 @@ extension WristStatus {
             "Phone not nearby. Will send later."
         case .withPhone:
             "With the phone"
+        // "Open the phone app" was a lie: it might help a future transfer, but by
+        // the time this renders the capture has already failed twice and is gone.
+        // Capturing again is the only thing that recovers it.
         case .failed(let count) where count > 1:
-            "\(count) not handed off. Open the phone app."
+            "\(count) not handed off. Capture again."
         case .failed:
-            "Not handed off. Open the phone app."
+            "Not handed off. Capture again."
         case .companionAppMissing:
             "No MindGrapes on your phone."
         case .nothingHeard:

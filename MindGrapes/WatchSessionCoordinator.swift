@@ -20,9 +20,19 @@ private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "watch
 /// tested in the kit; the app target has no test target (#24). Same split as
 /// `BackgroundUploader` over `BackgroundUploadReconciler`.
 final class WatchSessionCoordinator: NSObject, @unchecked Sendable {
+    /// The one coordinator, so a screen that changes a setting the Watch depends
+    /// on can push it without owning the session.
+    ///
+    /// A second instance would take over `WCSession.default`'s single delegate
+    /// slot and silently stop the first one receiving captures, so this is not
+    /// merely convenient — the type is a singleton whether or not it says so.
+    /// `init` is private, because a doc comment saying "do not construct another"
+    /// is not what stops anyone; the access level is.
+    static let shared = WatchSessionCoordinator()
+
     private let session: WCSession
 
-    init(session: WCSession = .default) {
+    private init(session: WCSession = .default) {
         self.session = session
         super.init()
     }
@@ -47,7 +57,11 @@ final class WatchSessionCoordinator: NSObject, @unchecked Sendable {
     /// phone, so it has to be pushed rather than looked up.
     func pushSettings() {
         guard session.activationState == .activated else { return }
-        let includeLocation = SharedDefaults()?.includeLocation ?? false
+        // Through ``WatchSettings`` rather than read straight off the toggle. The
+        // stored value defaults to `true` when the user has not answered the
+        // location pitch yet, and pushing that unset `true` makes the watch app
+        // raise a system location alert the moment it opens, unprompted (SPEC 9).
+        let includeLocation = WatchSettings.includeLocation(SharedDefaults())
         do {
             try session.updateApplicationContext(["includeLocation": includeLocation])
         } catch {
@@ -102,11 +116,24 @@ extension WatchSessionCoordinator: WCSessionDelegate {
             let assertion = UIApplication.shared.beginBackgroundTask(withName: "watch-capture")
             defer { UIApplication.shared.endBackgroundTask(assertion) }
 
-            guard let composition = try? AppComposition.make() else {
-                // Not onboarded, or the store will not open. The transfer is gone
-                // either way, so this is the one place a watch capture can be lost —
-                // and it can only happen before the user has ever signed in.
-                log.error("received a watch capture with no composition; it is lost")
+            let composition: AppComposition
+            do {
+                composition = try AppComposition.make()
+            } catch {
+                // The transfer is gone whatever went wrong here, so this is the one
+                // place a watch capture can be lost outright.
+                //
+                // Not only the not-onboarded case, which is what this used to
+                // claim. `AppComposition.make()` also throws when the App Group
+                // container is unavailable, when its directories cannot be
+                // prepared, or when the `ModelContainer` will not open — and a
+                // phone launched in the background before its first unlock after a
+                // reboot hits exactly that, with a paired Watch handing captures
+                // over the whole time. The error is logged rather than swallowed
+                // because it is the only evidence that will ever exist.
+                log.error(
+                    "watch capture \(payload.id, privacy: .public) lost, no composition: \(String(describing: error), privacy: .public)"
+                )
                 return
             }
 
@@ -123,7 +150,20 @@ extension WatchSessionCoordinator: WCSessionDelegate {
             switch outcome {
             case .enqueued(let id):
                 log.notice("enqueued watch capture \(id, privacy: .public)")
-                _ = try? await composition.drainer.drainOnce()
+                // Best-effort: the record is already durable, so a drain that fails
+                // costs latency and not the capture. Logged rather than discarded
+                // because a silent `try?` here is what made a real incident
+                // undiagnosable — three watch captures sat queued for fifteen
+                // minutes and only went out when the app was next opened, with
+                // nothing in the log to say whether the drain had run and failed or
+                // never run at all.
+                do {
+                    _ = try await composition.drainer.drainOnce()
+                } catch {
+                    log.error(
+                        "drain after watch capture \(id, privacy: .public) failed: \(String(describing: error), privacy: .public)"
+                    )
+                }
             case .duplicate(let id):
                 log.notice("watch capture \(id, privacy: .public) was already queued; redelivery ignored")
             case .rejected(let reason):
@@ -139,5 +179,14 @@ extension WatchSessionCoordinator: WCSessionDelegate {
     func sessionDidDeactivate(_ session: WCSession) {
         // Reactivate so a switched Watch can still hand captures over.
         session.activate()
+    }
+
+    /// Fires when the Watch app is installed, removed, or the paired Watch
+    /// changes. A freshly installed watch app has no application context at all,
+    /// so without this it would take no location until the phone next came to the
+    /// foreground — and the wrist must never guess, because guessing wrong means
+    /// prompting for a permission the user already declined (SPEC 9).
+    func sessionWatchStateDidChange(_ session: WCSession) {
+        pushSettings()
     }
 }
