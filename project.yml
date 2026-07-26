@@ -116,6 +116,14 @@ targets:
       properties:
         CFBundleDisplayName: Watch Spike
         WKApplication: true
+        # A real Watch reaches the dev stack over the LAN, not localhost, and ATS
+        # blocks cleartext to a private address. Without this the spike fails at
+        # discovery and reports a transport error, which reads as "watchOS auth
+        # doesn't work" when it means "ATS said no" — the exact false negative
+        # this experiment cannot afford. Local networking only, not
+        # NSAllowsArbitraryLoads, and only in this throwaway target.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         # The callback scheme must match AuthManager's default redirect_uri, or
         # the consent sheet never hands the code back.
         CFBundleURLTypes:
