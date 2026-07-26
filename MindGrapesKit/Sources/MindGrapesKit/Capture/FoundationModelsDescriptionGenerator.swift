@@ -1,7 +1,12 @@
 // ABOUTME: The Foundation Models implementation of DescriptionGenerating (item 13), device-verified.
 // ABOUTME: Availability-gated so a device without Apple Intelligence falls to the template (SPEC 7.3).
 
-#if canImport(FoundationModels)
+// watchOS can import FoundationModels but not use it: `SystemLanguageModel` and
+// `LanguageModelSession` are unavailable there. `canImport` alone therefore let
+// this file into the watchOS build and broke it. Excluded rather than
+// availability-gated because the Watch has no camera, so it never generates a
+// photo description in the first place (SPEC 10.8).
+#if canImport(FoundationModels) && !os(watchOS)
 import Foundation
 import FoundationModels
 

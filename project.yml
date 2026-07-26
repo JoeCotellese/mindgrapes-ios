@@ -6,7 +6,10 @@ name: MindGrapes
 options:
   bundleIdPrefix: net.cotellese
   deploymentTarget:
-    iOS: "26.0"
+    # iOS 27 for the `.notes.createNote` app schema (SPEC 10.7): the macro's
+    # generated conformance is @available(iOS 27.0, *), and gating it would mean
+    # either a duplicate 26-compatible intent or no App Shortcuts on 26.
+    iOS: "27.0"
   createIntermediateGroups: true
   groupSortPosition: top
 
@@ -61,6 +64,15 @@ targets:
       path: MindGrapes/Info.plist
       properties:
         CFBundleDisplayName: MindGrapes
+        # How Siri hears and says the app name. "MindGrapes" as one written word
+        # is not what anyone says out loud, and an App Shortcut only matches when
+        # the utterance carries the app name — so the spoken form and the aliases
+        # are what make "capture a thought in mind grapes" reach our intent
+        # instead of Apple Notes.
+        CFBundleSpokenName: Mind Grapes
+        INAlternativeAppNames:
+          - INAlternativeAppName: Mind Grapes
+          - INAlternativeAppName: Grapes
         UILaunchScreen: {}
         # Slice 2 camera capture. The photo picker uses the out-of-process
         # PHPicker and needs no photo-library string.
@@ -77,7 +89,57 @@ targets:
             CFBundleURLSchemes:
               - net.cotellese.mindgrapes
 
+  # Throwaway. Answers SPEC 15 question 1 (can the passkey ceremony complete in a
+  # watchOS ASWebAuthenticationSession?) and then gets deleted. It is a separate
+  # target so the experiment cannot leak into the shipping app, and an
+  # independent watchOS app so it needs no pairing to run.
+  MindGrapesWatchSpike:
+    type: application
+    platform: watchOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: MindGrapesWatchSpike
+    dependencies:
+      - package: MindGrapesKit
+        product: MindGrapesKit
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes.watchspike
+        GENERATE_INFOPLIST_FILE: YES
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "0.1.0"
+    info:
+      path: MindGrapesWatchSpike/Info.plist
+      properties:
+        CFBundleDisplayName: Watch Spike
+        WKApplication: true
+        # A real Watch reaches the dev stack over the LAN, not localhost, and ATS
+        # blocks cleartext to a private address. Without this the spike fails at
+        # discovery and reports a transport error, which reads as "watchOS auth
+        # doesn't work" when it means "ATS said no" — the exact false negative
+        # this experiment cannot afford. Local networking only, not
+        # NSAllowsArbitraryLoads, and only in this throwaway target.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        # The callback scheme must match AuthManager's default redirect_uri, or
+        # the consent sheet never hands the code back.
+        CFBundleURLTypes:
+          - CFBundleURLName: net.cotellese.mindgrapes.oauth
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - net.cotellese.mindgrapes
+
 schemes:
+  MindGrapesWatchSpike:
+    build:
+      targets:
+        MindGrapesWatchSpike: all
+    run:
+      config: Debug
+
   MindGrapes:
     build:
       targets:

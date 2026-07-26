@@ -4,6 +4,15 @@
 SIMULATOR ?= platform=iOS Simulator,name=iPhone 17 Pro
 REPEAT ?= 5
 
+# The app needs the iOS 27 SDK for the `.notes.createNote` app schema, and
+# `xcode-select` still points at the released Xcode. Overriding here rather than
+# switching the machine's active developer directory keeps the rest of the
+# system on the stable toolchain. Collapse this to the plain path once 27 ships.
+# ponytail: one variable, no toolchain-detection logic; override on the command
+# line (`make build DEVELOPER_DIR=...`) if the beta lives elsewhere.
+DEVELOPER_DIR ?= /Applications/Xcode-beta.app/Contents/Developer
+export DEVELOPER_DIR
+
 .PHONY: test
 test: ## Run the MindGrapesKit unit suite on the host (no simulator needed)
 	cd MindGrapesKit && swift test
