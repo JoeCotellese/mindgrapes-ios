@@ -22,6 +22,14 @@ settings:
     # No development team is checked in. Simulator builds do not need one;
     # add DEVELOPMENT_TEAM locally (or via xcconfig) for device builds.
     CODE_SIGN_STYLE: Automatic
+    # Project-wide, not per-target. App Store Connect requires an embedded watch
+    # app's version and build to match its container exactly, and the same pair
+    # spelled in two target blocks is a rejection waiting for the first time
+    # someone bumps one of them. scripts/appstore-upload.sh overrides
+    # CURRENT_PROJECT_VERSION on the command line, which reaches both targets from
+    # here. (#18 was this class of plist mismatch.)
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "0.1.0"
 
 packages:
   MindGrapesKit:
@@ -63,8 +71,6 @@ targets:
         # this file at archive time, so an edit made in Xcode would be wiped.
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: "0.1.0"
     info:
       path: MindGrapes/Info.plist
       properties:
@@ -106,6 +112,11 @@ targets:
     deploymentTarget: "27.0"
     sources:
       - path: MindGrapesWatch
+      # Shared with the phone target rather than copied. icon.json already declares
+      # `"circles": ["watchOS"]`, so the watch variant is authored; without this the
+      # watch app ships no icon at all, which is a blank glyph on the home screen
+      # and an upload rejection.
+      - path: MindGrapes/MindGrapes.icon
     dependencies:
       - package: MindGrapesKit
         product: MindGrapesKit
@@ -116,8 +127,12 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes.watchkitapp
         GENERATE_INFOPLIST_FILE: YES
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: "0.1.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: MindGrapes
+        # The accent colour carries the icon's own colour, so `.borderedProminent`
+        # resolves to the brand instead of the flat grey it falls back to when no
+        # catalog defines one. A resource rather than a literal in Swift, so the
+        # value lives in one place.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         # No CODE_SIGN_ENTITLEMENTS: the wrist holds no tokens (so no Keychain
         # access group) and no queue (so no App Group). SPEC 4.2.
     info:
@@ -143,6 +158,14 @@ schemes:
     test:
       config: Debug
 
+  # Builds the watch app alone, which is what a screenshot or a compile check
+  # wants. It deliberately does NOT also build the phone app: a scheme with an
+  # iOS and a watchOS application in it has no single -destination that satisfies
+  # both, and `xcodebuild -scheme MindGrapesWatch -destination 'platform=watchOS
+  # Simulator,...'` fails outright with "watchOS Simulator platform doesn't match
+  # MindGrapes.app's supported platforms". The counterpart pair comes from the
+  # MindGrapes scheme instead: the phone app embeds the watch app, so installing
+  # it on an iPhone simulator installs the watch app on the paired watch.
   MindGrapesWatch:
     build:
       targets:

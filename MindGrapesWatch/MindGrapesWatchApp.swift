@@ -7,11 +7,17 @@ import SwiftUI
 struct MindGrapesWatchApp: App {
     // ponytail: prototype source. /implement swaps this for WatchCaptureRelay,
     // which owns the WCSession and stamps each capture's identity on the wrist.
+    //
+    // When it does, activation must not ride on this initializer: SwiftUI resolves
+    // a @State initial value lazily, on first body evaluation, so activating a
+    // WCSession from `init` would tie a background-delivery prerequisite to the UI
+    // happening to appear. It belongs in an explicit `.task` or a
+    // WKApplicationDelegate.
     @State private var handoff = PrototypeHandoff()
 
     var body: some Scene {
         WindowGroup {
-            CaptureView(status: handoff.status) { handoff.capture($0) }
+            WristCaptureView(status: handoff.status) { handoff.submit($0) }
         }
     }
 }
