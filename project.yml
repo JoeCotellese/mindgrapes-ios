@@ -22,6 +22,14 @@ settings:
     # No development team is checked in. Simulator builds do not need one;
     # add DEVELOPMENT_TEAM locally (or via xcconfig) for device builds.
     CODE_SIGN_STYLE: Automatic
+    # Project-wide, not per-target. App Store Connect requires an embedded watch
+    # app's version and build to match its container exactly, and the same pair
+    # spelled in two target blocks is a rejection waiting for the first time
+    # someone bumps one of them. scripts/appstore-upload.sh overrides
+    # CURRENT_PROJECT_VERSION on the command line, which reaches both targets from
+    # here. (#18 was this class of plist mismatch.)
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "0.1.0"
 
 packages:
   MindGrapesKit:
@@ -36,6 +44,11 @@ targets:
     dependencies:
       - package: MindGrapesKit
         product: MindGrapesKit
+      # Embeds the watch app into this bundle's Watch/ directory. The dependency
+      # is what makes the two apps counterparts, and WCSession only connects
+      # counterparts — an independent watch app could not reach the phone at all
+      # (SPEC 4.2, Decision 5).
+      - target: MindGrapesWatch
     # Signing.xcconfig supplies DEVELOPMENT_TEAM from an untracked local file for
     # device and release builds. It is empty by default, so a clone with nothing
     # set up still generates and builds for the simulator.
@@ -58,8 +71,6 @@ targets:
         # this file at archive time, so an edit made in Xcode would be wiped.
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: "0.1.0"
     info:
       path: MindGrapes/Info.plist
       properties:
@@ -89,16 +100,23 @@ targets:
             CFBundleURLSchemes:
               - net.cotellese.mindgrapes
 
-  # Throwaway. Answers SPEC 15 question 1 (can the passkey ceremony complete in a
-  # watchOS ASWebAuthenticationSession?) and then gets deleted. It is a separate
-  # target so the experiment cannot leak into the shipping app, and an
-  # independent watchOS app so it needs no pairing to run.
-  MindGrapesWatchSpike:
+  # The wrist. A companion of MindGrapes, not an independent watch app: it holds
+  # no tokens, no queue, and no networking, and hands each capture to the phone
+  # over WCSession (SPEC Decision 5, 4.2, 10.8). The bundle id sits inside the
+  # phone app's namespace because that is what makes the pair counterparts.
+  MindGrapesWatch:
     type: application
     platform: watchOS
+    # watchOS 27 to match the phone's iOS 27 floor. Nothing here needs 27 on its
+    # own; keeping the pair on one generation avoids a second availability story.
     deploymentTarget: "27.0"
     sources:
-      - path: MindGrapesWatchSpike
+      - path: MindGrapesWatch
+      # Shared with the phone target rather than copied. icon.json already declares
+      # `"circles": ["watchOS"]`, so the watch variant is authored; without this the
+      # watch app ships no icon at all, which is a blank glyph on the home screen
+      # and an upload rejection.
+      - path: MindGrapes/MindGrapes.icon
     dependencies:
       - package: MindGrapesKit
         product: MindGrapesKit
@@ -107,39 +125,30 @@ targets:
       Release: Signing.xcconfig
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes.watchspike
+        PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes.watchkitapp
         GENERATE_INFOPLIST_FILE: YES
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: "0.1.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: MindGrapes
+        # The accent colour carries the icon's own colour, so `.borderedProminent`
+        # resolves to the brand instead of the flat grey it falls back to when no
+        # catalog defines one. A resource rather than a literal in Swift, so the
+        # value lives in one place.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # No CODE_SIGN_ENTITLEMENTS: the wrist holds no tokens (so no Keychain
+        # access group) and no queue (so no App Group). SPEC 4.2.
     info:
-      path: MindGrapesWatchSpike/Info.plist
+      path: MindGrapesWatch/Info.plist
       properties:
-        CFBundleDisplayName: Watch Spike
+        CFBundleDisplayName: MindGrapes
+        # Single-target watch app (watchOS 7+ packaging), and the counterpart
+        # pointer. Without WKCompanionAppBundleIdentifier the system does not
+        # treat the two apps as a pair and WCSession never connects.
         WKApplication: true
-        # A real Watch reaches the dev stack over the LAN, not localhost, and ATS
-        # blocks cleartext to a private address. Without this the spike fails at
-        # discovery and reports a transport error, which reads as "watchOS auth
-        # doesn't work" when it means "ATS said no" — the exact false negative
-        # this experiment cannot afford. Local networking only, not
-        # NSAllowsArbitraryLoads, and only in this throwaway target.
-        NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
-        # The callback scheme must match AuthManager's default redirect_uri, or
-        # the consent sheet never hands the code back.
-        CFBundleURLTypes:
-          - CFBundleURLName: net.cotellese.mindgrapes.oauth
-            CFBundleTypeRole: Editor
-            CFBundleURLSchemes:
-              - net.cotellese.mindgrapes
+        WKCompanionAppBundleIdentifier: net.cotellese.mindgrapes
+        # SPEC 9: the fix is taken on the wrist, because a capture made on a run
+        # should record where the runner was, not where the phone caught up.
+        NSLocationWhenInUseUsageDescription: MindGrapes tags a capture with where you made it, when you turn location on.
 
 schemes:
-  MindGrapesWatchSpike:
-    build:
-      targets:
-        MindGrapesWatchSpike: all
-    run:
-      config: Debug
-
   MindGrapes:
     build:
       targets:
@@ -147,4 +156,19 @@ schemes:
     run:
       config: Debug
     test:
+      config: Debug
+
+  # Builds the watch app alone, which is what a screenshot or a compile check
+  # wants. It deliberately does NOT also build the phone app: a scheme with an
+  # iOS and a watchOS application in it has no single -destination that satisfies
+  # both, and `xcodebuild -scheme MindGrapesWatch -destination 'platform=watchOS
+  # Simulator,...'` fails outright with "watchOS Simulator platform doesn't match
+  # MindGrapes.app's supported platforms". The counterpart pair comes from the
+  # MindGrapes scheme instead: the phone app embeds the watch app, so installing
+  # it on an iPhone simulator installs the watch app on the paired watch.
+  MindGrapesWatch:
+    build:
+      targets:
+        MindGrapesWatch: all
+    run:
       config: Debug

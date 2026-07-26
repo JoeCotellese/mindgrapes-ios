@@ -52,6 +52,43 @@ public actor CaptureQueue {
         try insert(CaptureRecord(photo: photo, createdAt: now))
     }
 
+    /// What ``enqueue(note:id:now:)`` did, so a caller can tell a fresh capture
+    /// from a redelivery without inspecting the store itself.
+    public enum IdentifiedEnqueueOutcome: Sendable, Equatable {
+        case inserted
+        case duplicate
+    }
+
+    /// Persists a note capture under an id the caller already chose, or does
+    /// nothing if that id is already in the store.
+    ///
+    /// This is the watch relay's door (SPEC 8.1). The Watch stamps the id on the
+    /// wrist, so `WCSession.transferUserInfo` redelivering a transfer must enqueue
+    /// the same `idempotency_key` rather than a second capture.
+    ///
+    /// **An existence check, not SwiftData's unique-constraint upsert.** `id` is
+    /// `@Attribute(.unique)`, so inserting a colliding record would *replace* the
+    /// stored one. A redelivery can arrive long after the capture was delivered, and
+    /// replacing a `succeeded` record with a fresh `pending` one would send it
+    /// again — producing a second experience server-side, because the server does
+    /// not honor `idempotency_key` yet (SPEC 6.5, server task 3). The same hazard
+    /// applies mid-send to an `inFlight` record a drain pass is holding. Skipping is
+    /// the only safe answer, so it is written out rather than left to the store's
+    /// conflict policy.
+    @discardableResult
+    public func enqueue(
+        note: NoteDraft,
+        id: UUID,
+        now: Date = Date()
+    ) throws -> IdentifiedEnqueueOutcome {
+        var descriptor = FetchDescriptor<CaptureRecord>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
+        guard try context.fetch(descriptor).isEmpty else { return .duplicate }
+
+        _ = try insert(CaptureRecord(id: id, note: note, createdAt: now))
+        return .inserted
+    }
+
     private func insert(_ record: CaptureRecord) throws -> CaptureSnapshot {
         context.insert(record)
         try context.save()
@@ -191,6 +228,32 @@ public actor CaptureQueue {
         guard let description = description.nonBlank else { return }
         record.captureDescription = description
         record.ocrText = ocrText?.nonBlank
+        try context.save()
+    }
+
+    /// Fills in the human place label for a capture that arrived without one.
+    ///
+    /// The watch relay's counterpart to ``enqueue(note:id:now:)`` (SPEC 9). A watch
+    /// capture carries the coordinate taken on the wrist but no label, because
+    /// `CLGeocoder` needs network and a Watch with no phone nearby has none. The
+    /// phone geocodes after the record is already durable, so a geocode that hangs
+    /// cannot cost the capture — which means this necessarily runs *after* enqueue
+    /// and sometimes loses the race with the first drain pass.
+    ///
+    /// Guarded the same way ``updatePhotoContent(id:description:ocrText:)`` is:
+    /// `pending` only. Once a drain claimed the record its payload was already
+    /// encoded and sent, and changing the row afterwards would make the local
+    /// record disagree with what the server received. Losing the label is the
+    /// cheap half of that trade; SPEC 9 already treats a label as a nicety and a
+    /// geocode failure as non-fatal.
+    ///
+    /// No-op on an unknown id, a blank label, or a record that already has one: a
+    /// label supplied at capture time is better evidence than one derived later.
+    public func attachPlaceLabel(id: UUID, label: String) throws {
+        guard let record = try record(id: id) else { return }
+        guard record.state == .pending, record.placeLabel == nil else { return }
+        guard let label = label.nonBlank else { return }
+        record.placeLabel = label
         try context.save()
     }
 

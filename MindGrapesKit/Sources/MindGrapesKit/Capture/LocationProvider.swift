@@ -28,6 +28,17 @@ public protocol ReverseGeocoding: Sendable {
     func placeLabel(for coordinate: Coordinate) async -> String?
 }
 
+/// A geocoder for a device that has no business geocoding.
+///
+/// The wrist: `CLGeocoder` needs network, and a Watch with no phone nearby has
+/// none, so the label is made on the phone when it receives the handoff (#22).
+/// Returning `nil` is already the documented non-fatal outcome (SPEC 9), so this
+/// needs no special handling anywhere upstream.
+public struct NoReverseGeocoding: ReverseGeocoding {
+    public init() {}
+    public func placeLabel(for coordinate: Coordinate) async -> String? { nil }
+}
+
 /// The one-shot location pipeline (SPEC 9).
 ///
 /// Two guarantees, both the reason this type exists rather than a bare
@@ -74,18 +85,19 @@ public struct LocationProvider: Sendable {
         return LocationFix(coordinate: coordinate, placeLabel: label)
     }
 
-    /// Runs `operation`, returning `nil` if the budget elapses first. The losing
-    /// child is cancelled, so a still-pending CoreLocation request does not leak.
+    /// A coordinate with no reverse geocode attempted at all.
+    ///
+    /// The wrist's path (SPEC 9, and the decision recorded on #22). `CLGeocoder`
+    /// needs network, and a Watch with no phone nearby is exactly a Watch with no
+    /// network, so on the case that matters most — a capture made on a run —
+    /// geocoding would spend the whole budget to return `nil`. The phone labels the
+    /// coordinate when it receives the handoff instead.
+    public func currentCoordinate() async -> Coordinate? {
+        await withTimeBudget(budget) { await self.locator.location() }
+    }
+
+    /// Runs `operation` under this provider's budget. See ``withTimeBudget``.
     private func withBudget<T: Sendable>(_ operation: @escaping @Sendable () async -> T?) async -> T? {
-        await withTaskGroup(of: T?.self) { group in
-            group.addTask { await operation() }
-            group.addTask {
-                try? await Task.sleep(for: budget)
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
+        await withTimeBudget(budget, operation)
     }
 }

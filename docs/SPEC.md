@@ -68,10 +68,28 @@ These are settled. Rationale is recorded so it does not get re-litigated.
    (`image_captures.py:209-227`). Devices without Apple Intelligence degrade
    to OCR-only or user-typed descriptions (section 7.3).
 
-5. **watchOS is standalone.** The Watch app registers its own OAuth client
-   via DCR, holds its own tokens in its own keychain, and posts directly over
-   WiFi or LTE. It works with the phone absent. WCSession pushes only initial
-   configuration (base URL), never captures.
+5. **watchOS relays through the phone.** The Watch app captures dictation,
+   stamps the idempotency key and `occurred_at` on the wrist, and hands the
+   capture to `WCSession.transferUserInfo`. The phone receives it, enqueues it
+   into the same `CaptureQueue` every other entry point uses, and delivers it.
+   The Watch never talks to the server: no OAuth client of its own, no tokens
+   on the wrist, no queue of its own.
+
+   This reverses the original decision (Watch standalone, own DCR, own tokens,
+   posts directly over WiFi or LTE), which was not achievable on this
+   household's network. The brain sits behind Tailscale — Decision 6 already
+   said so, for onboarding — and **Tailscale has no watchOS app**. It ships
+   for iOS, iPadOS, macOS, tvOS, and visionOS only, so a Watch cannot join the
+   tailnet and cannot route to the server however it is authenticated. The
+   original decision assumed a reachable server and was wrong about this
+   network, not merely ambitious.
+
+   Consequence, stated rather than buried: a capture made with the phone
+   absent waits in the system's outbox until the phone is nearby again. It is
+   never lost, but it is not delivered on the run. That is the price of the
+   tailnet, and it is the reason Phase 3's original success condition 1
+   ("phone powered off, capture lands server-side") is deleted rather than
+   deferred.
 
 6. **Onboarding via QR code.** The server's `/connect` page
    (`oauth/views.py:172-250`) grows a QR encoding the base URL. Phone scans
@@ -84,10 +102,14 @@ These are settled. Rationale is recorded so it does not get re-litigated.
 7. **Phase 1 ships auth, text capture, and photo capture** from the app
    itself. Ambient entry points, Watch, and review come later (section 12).
 
-8. **iOS 26+ / watchOS 26+, Swift 6, strict concurrency, SwiftUI, App
+8. **iOS 27+ / watchOS 27+, Swift 6, strict concurrency, SwiftUI, App
    Intents first.** There is no meaningful primary UI; the App Intent is the
    unit of functionality and every entry point, the app UI included, invokes
-   the same intent.
+   the same intent. The floor is 27, not the 26 originally specced, because
+   the `.notes.createNote` app schema (section 10.7) generates an
+   `@available(iOS 27.0, *)` conformance: without it Siri hands a generic
+   "capture a thought" to Apple Notes, and gating it would mean either a
+   duplicate 26-compatible intent or no App Shortcuts on 26.
 
 9. **Uploads run on a background `URLSession`; only the app refreshes
    tokens.** Extensions enqueue durably and hand the transfer to the system,
@@ -193,8 +215,12 @@ on nothing app-specific. Networking never appears outside `BrainClient`.
   `ControlWidget` for Control Center and the Action Button.
 - `MindGrapesShare` (share extension): text/URL/image intake from other
   apps.
-- `MindGrapesWatch` (watchOS app): dictation-first capture, its own
-  onboarding, its own queue.
+- `MindGrapesWatch` (watchOS app, a **companion** of the phone app, not an
+  independent one): dictation-first capture, handed to the phone over
+  WCSession. No onboarding, no queue, no networking. The counterpart
+  relationship is a hard requirement, not a packaging preference: WCSession
+  connects two counterpart apps, so an independent watch app could not reach
+  the phone at all.
 - `MindGrapesWatchWidgets` (watchOS widget extension): complication and
   Smart Stack widget.
 - `MindGrapesKit` (local SPM package): everything in 4.1, compiled for iOS
@@ -207,8 +233,8 @@ Shared plumbing:
   shared `UserDefaults` (base URL, location toggle). The App Group is also
   the background session's `sharedContainerIdentifier` (section 8.2).
 - One Keychain access group for tokens, shared by app + extensions on the
-  phone. Extensions read; only the app writes (section 5.4). The Watch has
-  its own keychain and its own tokens by design (Decision 5).
+  phone. Extensions read; only the app writes (section 5.4). The Watch holds
+  no tokens at all (Decision 5), so it needs no share of this.
 
 ### 4.3 Concurrency
 
@@ -369,8 +395,8 @@ Client behavior:
   `kSecAttrAccessibleAfterFirstUnlock` (background queue drains must read it
   without the device being actively unlocked; `WhenUnlocked` would strand
   the queue), `kSecAttrSynchronizable = false` (tokens must never iCloud-sync;
-  the Watch registers separately by design, and a synced refresh token used
-  from two devices would trip family revocation).
+  a synced refresh token used from two devices would trip family
+  revocation).
 - Refresh: proactively when the access token has less than 60 seconds left,
   otherwise on demand before an upload. With a 600 s TTL, effectively every
   capture session refreshes; this is fine and exercises rotation constantly.
@@ -409,9 +435,9 @@ The design removes the race rather than guarding it:
 - Consequence: `AuthManager` has no locking, no re-read-after-acquire, and
   no reentrancy concerns. Its refresh path is single-threaded within one
   process and guarded by a plain actor.
-- The Watch is a separate OAuth client with its own token family and a
-  single process. It refreshes for itself and is structurally outside this
-  rule.
+- The Watch holds no tokens and never refreshes (Decision 5). Its captures
+  are delivered by the phone, under the phone's token, so it is outside this
+  rule by having no part in it.
 
 The one constraint this places on the Keychain (already in 5.3):
 `kSecAttrAccessibleAfterFirstUnlock` plus an App Group access group, so an
@@ -419,14 +445,16 @@ extension can *read* the token pair. Extensions never write it.
 
 ### 5.5 Watch registration
 
-The Watch runs the same DCR + PKCE flow as its own client
-(`client_name: "MindGrapes Watch"`), so revocation on `/connect/clients` is
-per-device. WCSession transfers only `ServerConfig` (base URL) so the user
-does not type a URL on the Watch; if the phone is absent, manual entry on
-the Watch remains possible. Risk: the authorize page is passkey-gated, and
-WebAuthn inside a watchOS authentication session is unproven; this is an
-open question with fallbacks (section 15), which is part of why the Watch is
-Phase 3.
+There is none. The Watch does not authenticate, because it never contacts
+the server (Decision 5). It needs no `ServerConfig` either: it does not build
+requests, so it has no use for a base URL. `/connect/clients` therefore lists
+one client for this household's phone and never a second for the wrist, and
+revoking the phone stops watch captures too — correctly, since the phone is
+what delivers them.
+
+This also retires the risk this section used to carry: whether the
+passkey-gated authorize page can complete inside a watchOS authentication
+session. It is no longer a question this client needs answered.
 
 ## 6. Server contract
 
@@ -675,9 +703,14 @@ pruned after 7 days (they back the "recent captures" list in the app).
 Failed (terminal) records persist until the user dismisses them; their
 payload remains exportable so no capture is ever silently lost.
 
-The phone's queue is shared by app + extensions via the App Group. The
-Watch's queue is a separate instance of the same code in the Watch's own
-container; the two never merge or relay (Decision 5).
+The phone's queue is shared by app + extensions via the App Group. There is
+no second queue on the Watch: `WCSession.transferUserInfo` is already a
+persistent FIFO outbox that survives app termination and reboot and retries
+until the counterpart receives, so the Watch hands each capture to the
+system and keeps nothing of its own (Decision 5). A watch capture becomes a
+`CaptureRecord` when the phone receives it, carrying the `id` the Watch
+stamped, so a redelivered transfer enqueues the same idempotency key rather
+than a second capture.
 
 ### 8.2 Transport: background `URLSession`
 
@@ -762,7 +795,11 @@ validity at enqueue time; captures are accepted even while signed out.
   app, extensions, and intents agree. Default on, set during onboarding
   when the permission is requested (with the honest pitch: location makes
   memories answer "where was that").
-  The Watch keeps its own toggle and uses its own `CLLocationManager`.
+  A watch capture carries the fix the Watch took on the wrist, using the
+  Watch's own `CLLocationManager` and the phone's shared toggle, transferred
+  with the capture. Taking the fix on the phone at receive time would record
+  where the phone was when it caught up, which for a capture made on a run is
+  the wrong place.
 - 3-second acquisition budget inside capture (section 7.1). Extensions and
   intents run the same code; if the process cannot get a fix in budget, the
   capture ships without coordinates.
@@ -844,16 +881,46 @@ background without opening the app; the result phrase confirms ("Saved to
 your brain"). This is the load-bearing hands-free path, including in the
 car (10.9).
 
+Phrases alone are not enough, and this was learned the hard way: a bare
+"Hey Siri, capture a thought" went to Apple Notes. App Shortcut phrases only
+match when the utterance carries the app name, and nothing told the system
+that MindGrapes takes notes. Three things fix it, all shipped and
+device-verified:
+
+- `CaptureNoteIntent` conforms to the `.notes.createNote` app schema, which
+  states structurally that this app creates notes. Apple Intelligence can
+  then route wording nobody enumerated. This is what makes bare phrases and
+  novel ones ("jot down that the vet appointment moved") reach the app.
+- `CFBundleSpokenName` ("Mind Grapes") and `INAlternativeAppNames`
+  ("Mind Grapes", "Grapes"), because a coined compound word is not what
+  anyone says out loud.
+- Phrase variants including leading-name forms, which match more reliably
+  than trailing ones when an utterance is clipped.
+
+The schema requires the whole Notes data model — `name`, optional `content`,
+`attachments`, `isPinned`, a `folder` parameter, and a returned note entity,
+with the folder entity in turn requiring an account. MindGrapes has none of
+these concepts; the types exist to satisfy the contract and resolve to
+nothing. The App Intents metadata processor, not the compiler, enforces
+this: a partial conformance type-checks happily and fails at build time.
+
 ### 10.8 watchOS
 
 - App: dictation-first (text field on watchOS is a last resort), one big
-  capture button, offline queue status glyph. No photo capture (no
-  camera).
+  capture button. No photo capture (no camera).
+- Status glyph reports the handoff, not a delivery: "with the phone" or
+  "waiting for the phone". The Watch cannot know whether the server took a
+  capture, and must not imply it does.
 - Complication: launches straight into dictation.
 - Smart Stack widget: relevance-based (time of day, after workouts;
   tune later) with a capture button.
-- Own OAuth client, own tokens, own queue (Decisions 5; risks in
-  section 15).
+- No OAuth client, no tokens, no queue. Captures go to the phone over
+  `WCSession.transferUserInfo` (Decision 5).
+- The `.notes.createNote` app schema is **unavailable on watchOS**
+  (`'notes' is unavailable in watchOS`, verified against the watchOS 27 SDK),
+  so a watch capture intent gets phrase matching only. The schema conformance
+  in section 10.7 stays iOS-only, and any intent shared between the two
+  targets has to be conditionally compiled.
 
 ### 10.9 CarPlay: the reality check
 
@@ -998,24 +1065,32 @@ editing):
   6. Every entry point produces rows indistinguishable (fields, metadata)
      from app-UI captures, verified by a diff of server rows.
 
-### Phase 3: watchOS standalone
+### Phase 3: watchOS capture, relayed by the phone
 
-- Goal: capture from the wrist with the phone left at home.
-- Scope: Watch app (dictation capture), own DCR/OAuth (pending the
-  feasibility answer in section 15), own queue, complication, Smart Stack
-  widget, WCSession config push.
-- Out of scope: photos on Watch, browsing on Watch.
-- Server dependencies: possibly an alternative auth path if
-  WebAuthn-in-watch-session proves infeasible (section 15); otherwise
-  none.
+- Goal: capture from the wrist without reaching for the phone. Not without
+  the phone: the tailnet makes that impossible (Decision 5).
+- Scope: Watch companion app (dictation capture), `WCSession` handoff both
+  sides, phone-side receipt into the existing `CaptureQueue`, complication,
+  Smart Stack widget.
+- Out of scope: photos on Watch, browsing on Watch, any networking or auth
+  on Watch.
+- Depends on: Phase 2's background `URLSession` work (issue #21). A watch
+  handoff wakes the phone app in the background to receive, and a capture
+  that arrives there has to reach the server without a foreground. Deferring
+  #21 through Phase 2 is survivable; deferring it through Phase 3 is not.
+- Server dependencies: none. The Watch is invisible to the server.
 - Success conditions:
-  1. Watch with WiFi, paired phone powered off: dictated capture lands
-     server-side.
-  2. Watch offline: capture queues; lands after connectivity returns;
-     exactly once.
-  3. `/connect/clients` shows phone and Watch as separate clients;
-     revoking the Watch does not sign out the phone.
-  4. Complication tap to dictation-ready in under 2 s.
+  1. Dictate on the Watch with the phone nearby: the capture lands
+     server-side, once, with the Watch's own `occurred_at` and coordinates
+     rather than the phone's at receive time.
+  2. Dictate with the phone powered off, then power it on: the capture lands
+     without touching either device again, and exactly one experience
+     exists.
+  3. Force-quit the Watch app immediately after dictating, before the phone
+     is reachable: the capture still lands. This is the claim that the
+     system outbox, not our code, owns durability on the wrist.
+  4. Dictate three captures offline; all three land, in order, exactly once.
+  5. Complication tap to dictation-ready in under 2 s.
 
 ### Phase 4: review and manage
 
@@ -1149,23 +1224,27 @@ Phase 1 unless noted.
    `REST read doors for the app: list/search/get experience with presigned
    attachment URLs` and
    `REST supersede/correction door for the app`.
-8. Phase 3, contingent (section 15):
-   `Alternative device authorization path for watchOS if WebAuthn cannot
-   complete in a watch authentication session`.
+8. ~~Phase 3, contingent: alternative device authorization path for
+   watchOS.~~ **Withdrawn.** The Watch no longer authenticates (Decision 5),
+   so the server needs nothing for Phase 3.
 
 ## 15. Open questions
 
 Genuinely open; nothing here re-opens section 2.
 
-1. **watchOS auth feasibility.** Can the passkey ceremony behind
-   `/oauth/authorize` complete inside a watchOS
-   `ASWebAuthenticationSession`? Unproven. If not, options are (a) a
-   device-authorization-style grant on the server (RFC 8628 flavor:
-   Watch shows a code, user approves on the phone or any browser), or
-   (b) phone-brokered enrollment where the phone completes the flow for
-   the Watch's own client_id and hands the token pair over WCSession
-   once (keeps per-device revocation, bends "Watch does its own flow").
-   Must be answered by a spike before Phase 3 is planned in detail.
+1. ~~**watchOS auth feasibility.**~~ **Closed, and not by answering it.**
+   The question was whether the passkey ceremony could complete inside a
+   watchOS `ASWebAuthenticationSession`. It stopped mattering: the brain is
+   behind Tailscale, Tailscale has no watchOS app, and a Watch that cannot
+   route to the server gains nothing from being able to authenticate to it.
+   The Watch relays through the phone instead (Decision 5), so neither the
+   RFC 8628 grant nor phone-brokered enrollment is needed.
+
+   Worth keeping for the next person who asks: `ASWebAuthenticationSession`
+   *is* available on watchOS (since 6.2; `presentationContextProvider` is
+   not, because the system owns the presentation), and a spike against the
+   watchOS 27 SDK compiled and linked. Only the runtime behavior of the
+   passkey step inside it remains unknown, and now nothing depends on it.
 2. **`place_label` landing zone on the note path.** Server repo's call:
    `location` parameter on `captures.capture` versus `metadata_extra`
    (issue 2 in section 14). The client encoder adapts to either.
