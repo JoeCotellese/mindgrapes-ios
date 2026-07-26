@@ -102,11 +102,24 @@ extension WatchSessionCoordinator: WCSessionDelegate {
             let assertion = UIApplication.shared.beginBackgroundTask(withName: "watch-capture")
             defer { UIApplication.shared.endBackgroundTask(assertion) }
 
-            guard let composition = try? AppComposition.make() else {
-                // Not onboarded, or the store will not open. The transfer is gone
-                // either way, so this is the one place a watch capture can be lost —
-                // and it can only happen before the user has ever signed in.
-                log.error("received a watch capture with no composition; it is lost")
+            let composition: AppComposition
+            do {
+                composition = try AppComposition.make()
+            } catch {
+                // The transfer is gone whatever went wrong here, so this is the one
+                // place a watch capture can be lost outright.
+                //
+                // Not only the not-onboarded case, which is what this used to
+                // claim. `AppComposition.make()` also throws when the App Group
+                // container is unavailable, when its directories cannot be
+                // prepared, or when the `ModelContainer` will not open — and a
+                // phone launched in the background before its first unlock after a
+                // reboot hits exactly that, with a paired Watch handing captures
+                // over the whole time. The error is logged rather than swallowed
+                // because it is the only evidence that will ever exist.
+                log.error(
+                    "watch capture \(payload.id, privacy: .public) lost, no composition: \(String(describing: error), privacy: .public)"
+                )
                 return
             }
 
@@ -123,7 +136,20 @@ extension WatchSessionCoordinator: WCSessionDelegate {
             switch outcome {
             case .enqueued(let id):
                 log.notice("enqueued watch capture \(id, privacy: .public)")
-                _ = try? await composition.drainer.drainOnce()
+                // Best-effort: the record is already durable, so a drain that fails
+                // costs latency and not the capture. Logged rather than discarded
+                // because a silent `try?` here is what made a real incident
+                // undiagnosable — three watch captures sat queued for fifteen
+                // minutes and only went out when the app was next opened, with
+                // nothing in the log to say whether the drain had run and failed or
+                // never run at all.
+                do {
+                    _ = try await composition.drainer.drainOnce()
+                } catch {
+                    log.error(
+                        "drain after watch capture \(id, privacy: .public) failed: \(String(describing: error), privacy: .public)"
+                    )
+                }
             case .duplicate(let id):
                 log.notice("watch capture \(id, privacy: .public) was already queued; redelivery ignored")
             case .rejected(let reason):
