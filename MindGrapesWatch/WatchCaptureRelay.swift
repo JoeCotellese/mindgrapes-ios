@@ -37,6 +37,16 @@ final class WatchCaptureRelay: NSObject {
     private var pendingCoordinate: Coordinate?
     private var locationTask: Task<Void, Never>?
 
+    /// Captures made before the session finished activating, held until it does.
+    ///
+    /// `transferUserInfo` raises on a session that is not activated rather than
+    /// returning an error, and there is no error path to catch. watchOS relaunches
+    /// this app on every raise-to-wake, at which point the Capture button is live
+    /// and the status line still reads "Getting ready" — so a short dictation can
+    /// reach ``submit(_:)`` while `activate()` is still in flight. Holding is the
+    /// only option that neither crashes nor drops the capture.
+    private var held: [WatchCapturePayload] = []
+
     private let session: WCSession
     private let location: LocationProvider
 
@@ -117,14 +127,33 @@ final class WatchCaptureRelay: NSObject {
             return
         }
 
-        session.transferUserInfo(payload.userInfo)
-        log.notice("handed \(payload.id, privacy: .public) to the outbox, coordinate: \(coordinate != nil)")
+        handOver(payload)
 
         // A haptic, because the story this app exists for is "tap, speak, lower your
         // wrist" — at which point the screen reaches nobody. A haptic on the handoff
         // makes no claim about delivery.
         WKInterfaceDevice.current().play(.click)
         refreshStatus()
+    }
+
+    /// Hands one capture to the system outbox, or holds it if the session is not
+    /// activated yet. See ``held``.
+    private func handOver(_ payload: WatchCapturePayload) {
+        guard session.activationState == .activated else {
+            held.append(payload)
+            log.notice("holding \(payload.id, privacy: .public) until activation completes")
+            return
+        }
+        session.transferUserInfo(payload.userInfo)
+        log.notice("handed \(payload.id, privacy: .public) to the outbox, coordinate: \(payload.coordinate != nil)")
+    }
+
+    /// Hands over anything ``submit(_:)`` took before the session was ready.
+    private func flushHeld() {
+        guard session.activationState == .activated, !held.isEmpty else { return }
+        let waiting = held
+        held = []
+        for payload in waiting { handOver(payload) }
     }
 
     /// Recomputes from the session's own bookkeeping rather than assigning whatever
@@ -187,7 +216,10 @@ extension WatchCaptureRelay: WCSessionDelegate {
         if let error {
             log.error("activation failed: \(error.localizedDescription, privacy: .public)")
         }
-        Task { @MainActor in self.refreshStatus() }
+        Task { @MainActor in
+            self.flushHeld()
+            self.refreshStatus()
+        }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
@@ -214,6 +246,16 @@ extension WatchCaptureRelay: WCSessionDelegate {
             if failed {
                 self.failures += 1
                 WKInterfaceDevice.current().play(.failure)
+            } else {
+                // A clean transfer clears the count. Left monotonic, one failure
+                // pins the wrist on "Not handed off. Open the phone app." for the
+                // rest of the process — including for captures that did land,
+                // which trains the user to disbelieve the only signal they get.
+                //
+                // ponytail: a whole-count reset, so with two transfers in flight a
+                // success can clear a sibling's failure before the user has read
+                // it. Track unresolved transfer ids instead if that becomes real.
+                self.failures = 0
             }
             self.refreshStatus()
         }

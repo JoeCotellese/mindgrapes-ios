@@ -4,6 +4,7 @@
 import Foundation
 import MindGrapesKit
 import OSLog
+import UIKit
 import WatchConnectivity
 
 private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "watch-receive")
@@ -74,10 +75,21 @@ extension WatchSessionCoordinator: WCSessionDelegate {
 
     /// One handoff, one capture.
     ///
-    /// The capture is made durable before this returns, because once it does the
-    /// system considers the transfer delivered and will not offer it again. The
-    /// drain that follows is best-effort: a capture that does not go out now is
-    /// already safe in the queue and goes out on the next pass.
+    /// Once this returns the system considers the transfer delivered and will not
+    /// offer it again, so the work that makes the capture durable has to survive
+    /// past the return. The system may have launched this app in the background
+    /// purely to deliver the handoff, in which case the process becomes eligible
+    /// for suspension as soon as the runloop goes quiet — before the enqueue below
+    /// has reached disk. The background-task assertion is what keeps it alive, and
+    /// it covers the drain too: a drain that dies mid-flight leaves the record
+    /// queued rather than lost, but a suspension before `save()` loses the capture
+    /// outright with nothing to retry from.
+    ///
+    /// The assertion is taken on the main actor because `UIApplication` requires
+    /// it, which leaves one runloop hop between this return and the assertion
+    /// being held. That gap is not closable from a delegate callback that arrives
+    /// off the main actor, and a scheduled Task starts long before the system
+    /// quiesces a process, so it is the residual rather than the risk.
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         // Parsed here, synchronously, because `[String: Any]` is not Sendable and so
         // cannot cross into the Task. The payload can.
@@ -86,7 +98,10 @@ extension WatchSessionCoordinator: WCSessionDelegate {
             return
         }
 
-        Task {
+        Task { @MainActor in
+            let assertion = UIApplication.shared.beginBackgroundTask(withName: "watch-capture")
+            defer { UIApplication.shared.endBackgroundTask(assertion) }
+
             guard let composition = try? AppComposition.make() else {
                 // Not onboarded, or the store will not open. The transfer is gone
                 // either way, so this is the one place a watch capture can be lost —
