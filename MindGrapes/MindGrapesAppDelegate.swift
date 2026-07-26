@@ -14,11 +14,17 @@ import UIKit
 /// verified switchover that routes captures through that session.
 final class MindGrapesAppDelegate: NSObject, UIApplicationDelegate {
     private var pathTrigger: NetworkPathTrigger?
+    private let watchSession = WatchSessionCoordinator()
 
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // At launch, not on first appearance of a screen. The system delivers a
+        // queued watch handoff only to an app that has activated a session, and it
+        // may launch this app in the background purely to do it — at which point no
+        // screen ever appears (SPEC Decision 5).
+        watchSession.activate()
         let trigger = NetworkPathTrigger {
             // Resolve the composition lazily: at launch the user may not be
             // onboarded, in which case there is nothing to drain and make() throws
@@ -31,5 +37,12 @@ final class MindGrapesAppDelegate: NSObject, UIApplicationDelegate {
         trigger.start()
         pathTrigger = trigger
         return true
+    }
+
+    /// Re-pushes the location toggle to the wrist. Cheap, latest-value-wins, and it
+    /// is what makes a toggle the user changed in Settings reach the Watch without
+    /// waiting for the next cold launch.
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        watchSession.pushSettings()
     }
 }

@@ -63,6 +63,17 @@ public struct WatchCaptureReceiver: Sendable {
         guard let payload = WatchCapturePayload(userInfo: userInfo) else {
             return .rejected(reason: "malformed_payload")
         }
+        return await receive(payload, now: now)
+    }
+
+    /// The same work, from an already-parsed payload.
+    ///
+    /// `[String: Any]` is not `Sendable`, so a delegate callback cannot carry the
+    /// raw dictionary across into a `Task`. Parsing first, synchronously, turns it
+    /// into a value that can cross — which is why this overload is public rather
+    /// than an implementation detail.
+    @discardableResult
+    public func receive(_ payload: WatchCapturePayload, now: Date = Date()) async -> Outcome {
         guard let draft = payload.noteDraft(placeLabel: nil) else {
             // Unreachable unless the payload's non-blank rule and the draft's
             // disagree, which would be a bug in one of them rather than bad input.

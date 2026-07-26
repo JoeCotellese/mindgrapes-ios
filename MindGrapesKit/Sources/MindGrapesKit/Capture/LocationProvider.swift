@@ -28,6 +28,17 @@ public protocol ReverseGeocoding: Sendable {
     func placeLabel(for coordinate: Coordinate) async -> String?
 }
 
+/// A geocoder for a device that has no business geocoding.
+///
+/// The wrist: `CLGeocoder` needs network, and a Watch with no phone nearby has
+/// none, so the label is made on the phone when it receives the handoff (#22).
+/// Returning `nil` is already the documented non-fatal outcome (SPEC 9), so this
+/// needs no special handling anywhere upstream.
+public struct NoReverseGeocoding: ReverseGeocoding {
+    public init() {}
+    public func placeLabel(for coordinate: Coordinate) async -> String? { nil }
+}
+
 /// The one-shot location pipeline (SPEC 9).
 ///
 /// Two guarantees, both the reason this type exists rather than a bare

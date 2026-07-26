@@ -28,6 +28,12 @@ struct WristCaptureView: View {
     /// is `nonisolated` in the SDK.
     let submit: @MainActor (String) -> Void
 
+    /// Called when the button is pressed, before the user has said anything, so the
+    /// session owner can start a location request that is ready by the time the
+    /// dictation comes back. See `WatchCaptureRelay.beginCapture()` for why the fix
+    /// cannot wait until submit.
+    var beginCapture: @MainActor () -> Void = {}
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 6) {
@@ -37,6 +43,10 @@ struct WristCaptureView: View {
                 } onSubmit: { text in
                     submit(text)
                 }
+                // TextFieldLink offers no will-present hook, and a plain tap gesture
+                // would swallow the press the button needs. Simultaneous is what
+                // lets both happen.
+                .simultaneousGesture(TapGesture().onEnded { beginCapture() })
                 // Tint comes from the target's AccentColor asset, which carries the
                 // app icon's own colour. Without it a prominent button resolves to
                 // a flat grey that reads as disabled.

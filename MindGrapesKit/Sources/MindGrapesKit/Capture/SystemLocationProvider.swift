@@ -7,10 +7,7 @@
 //
 // watchOS joined for SPEC 9's rule that a watch capture carries the fix taken on
 // the wrist: a capture made on a run should record where the runner was, not where
-// the phone was when it caught up. The wrist uses the locator only, through
-// `LocationProvider.currentCoordinate()`; the geocoder below is compiled for it but
-// never reached, because CLGeocoder needs network and a Watch with no phone nearby
-// has none (#22).
+// the phone was when it caught up (#22).
 #if os(iOS) || os(watchOS)
 import CoreLocation
 import Foundation
@@ -22,7 +19,22 @@ import Foundation
 /// live in ``LocationProvider``; this only supplies its two dependencies.
 extension LocationProvider {
     public static func system(budget: Duration = .seconds(3)) -> LocationProvider {
-        LocationProvider(locator: SystemOneShotLocator(), geocoder: SystemReverseGeocoder(), budget: budget)
+        LocationProvider(locator: SystemOneShotLocator(), geocoder: systemGeocoder, budget: budget)
+    }
+
+    /// The wrist gets no geocoder at all, not even a compiled-in one.
+    ///
+    /// `CLGeocoder` needs network and a Watch with no phone nearby has none, so
+    /// ``LocationProvider/currentCoordinate()`` is the only path the wrist uses and
+    /// the label is made on the phone (#22). Excluding it here rather than merely
+    /// not calling it keeps `CLGeocoder`'s watchOS deprecation warnings out of the
+    /// build, and keeps a network-dependent API out of a binary that has no network.
+    private static var systemGeocoder: any ReverseGeocoding {
+        #if os(iOS)
+        SystemReverseGeocoder()
+        #else
+        NoReverseGeocoding()
+        #endif
     }
 }
 
@@ -207,6 +219,7 @@ private final class OneShotLocationRequest: NSObject, CLLocationManagerDelegate 
     }
 }
 
+#if os(iOS)
 /// `CLGeocoder` reverse geocoding, failing soft to `nil`.
 public struct SystemReverseGeocoder: ReverseGeocoding {
     public init() {}
@@ -252,4 +265,5 @@ private final class GeocoderBox: @unchecked Sendable {
         geocoder.cancelGeocode()
     }
 }
+#endif
 #endif
