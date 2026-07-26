@@ -1,7 +1,10 @@
 // ABOUTME: The Vision-backed OCR implementation of TextRecognizing (item 12), simulator/device-verified.
 // ABOUTME: Best-effort by contract: any recognition failure resolves to "" so OCR never fails a capture.
 
-#if canImport(Vision)
+// Same trap as FoundationModelsDescriptionGenerator: watchOS has a Vision module
+// to import but not the request types, so `canImport` alone let this into the
+// watchOS build and broke it. The Watch has no camera and runs no OCR (SPEC 10.8).
+#if canImport(Vision) && !os(watchOS)
 import Foundation
 import Vision
 
