@@ -231,6 +231,32 @@ public actor CaptureQueue {
         try context.save()
     }
 
+    /// Fills in the human place label for a capture that arrived without one.
+    ///
+    /// The watch relay's counterpart to ``enqueue(note:id:now:)`` (SPEC 9). A watch
+    /// capture carries the coordinate taken on the wrist but no label, because
+    /// `CLGeocoder` needs network and a Watch with no phone nearby has none. The
+    /// phone geocodes after the record is already durable, so a geocode that hangs
+    /// cannot cost the capture — which means this necessarily runs *after* enqueue
+    /// and sometimes loses the race with the first drain pass.
+    ///
+    /// Guarded the same way ``updatePhotoContent(id:description:ocrText:)`` is:
+    /// `pending` only. Once a drain claimed the record its payload was already
+    /// encoded and sent, and changing the row afterwards would make the local
+    /// record disagree with what the server received. Losing the label is the
+    /// cheap half of that trade; SPEC 9 already treats a label as a nicety and a
+    /// geocode failure as non-fatal.
+    ///
+    /// No-op on an unknown id, a blank label, or a record that already has one: a
+    /// label supplied at capture time is better evidence than one derived later.
+    public func attachPlaceLabel(id: UUID, label: String) throws {
+        guard let record = try record(id: id) else { return }
+        guard record.state == .pending, record.placeLabel == nil else { return }
+        guard let label = label.nonBlank else { return }
+        record.placeLabel = label
+        try context.save()
+    }
+
     /// Deletes every capture record and its spooled derivative.
     ///
     /// The outbox is device-global and its records carry no account identity, so

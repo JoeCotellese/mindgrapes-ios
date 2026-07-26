@@ -141,6 +141,64 @@ struct CaptureQueueTests {
         #expect(snapshot.state == .inFlight)
     }
 
+    // MARK: - Attaching a place label after enqueue (watch relay, SPEC 9)
+
+    /// A watch capture arrives with a coordinate and no label, because `CLGeocoder`
+    /// needs network and the wrist may have none. The phone labels it after the
+    /// record is already durable, so a geocode that hangs cannot cost the capture.
+    @Test func attachPlaceLabelFillsAnUnlabelledRecord() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let coordinate = try #require(Coordinate(latitude: 39.9526, longitude: -75.1652))
+        let draft = try #require(NoteDraft(content: "on a run", coordinate: coordinate))
+        let id = UUID()
+        _ = try await queue.enqueue(note: draft, id: id)
+
+        try await queue.attachPlaceLabel(id: id, label: "Kelly Drive")
+
+        let persisted = try fixture.directContext().fetch(FetchDescriptor<CaptureRecord>())
+        #expect(persisted.first?.placeLabel == "Kelly Drive")
+    }
+
+    /// Late is the normal case: the geocode races the first drain pass. Once a
+    /// record has left for the server, changing its payload would make the local
+    /// row disagree with what was actually sent.
+    @Test func attachPlaceLabelSkipsARecordThatHasAlreadyLeft() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let id = UUID()
+        _ = try await queue.enqueue(note: note(), id: id)
+        _ = try await queue.claimDue()
+
+        try await queue.attachPlaceLabel(id: id, label: "Too Late")
+
+        let persisted = try fixture.directContext().fetch(FetchDescriptor<CaptureRecord>())
+        #expect(persisted.first?.placeLabel == nil)
+    }
+
+    @Test func attachPlaceLabelDoesNotOverwriteALabelTheCaptureAlreadyHad() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let draft = try #require(NoteDraft(content: "labelled", placeLabel: "Home"))
+        let id = UUID()
+        _ = try await queue.enqueue(note: draft, id: id)
+
+        try await queue.attachPlaceLabel(id: id, label: "Somewhere Else")
+
+        let persisted = try fixture.directContext().fetch(FetchDescriptor<CaptureRecord>())
+        #expect(persisted.first?.placeLabel == "Home")
+    }
+
+    @Test func attachPlaceLabelOnAnUnknownIDIsANoOp() async throws {
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+
+        try await queue.attachPlaceLabel(id: UUID(), label: "Nowhere")
+
+        let persisted = try fixture.directContext().fetch(FetchDescriptor<CaptureRecord>())
+        #expect(persisted.isEmpty)
+    }
+
     // MARK: - Draining
 
     @Test func claimDueReturnsDueRecordsOldestFirstAndMarksThemInFlight() async throws {

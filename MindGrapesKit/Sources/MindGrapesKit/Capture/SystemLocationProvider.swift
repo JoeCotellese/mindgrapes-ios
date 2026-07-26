@@ -1,10 +1,17 @@
 // ABOUTME: The CoreLocation-backed OneShotLocating and CLGeocoder-backed ReverseGeocoding used on device.
 // ABOUTME: Untested by the loop suite (needs a device/simulator); LocationProvider holds the tested logic.
 
-// iOS only, deliberately. SPEC 9's location capture is a phone feature, and
-// scoping the file here keeps the CoreLocation APIs that are deprecated on the
-// macOS host (CLGeocoder) out of the `swift test` build, so the loop stays clean.
-#if os(iOS)
+// The two devices that capture, and not the macOS host. Scoping the file here
+// keeps the CoreLocation APIs that are deprecated on macOS (CLGeocoder) out of the
+// `swift test` build, so the loop stays clean.
+//
+// watchOS joined for SPEC 9's rule that a watch capture carries the fix taken on
+// the wrist: a capture made on a run should record where the runner was, not where
+// the phone was when it caught up. The wrist uses the locator only, through
+// `LocationProvider.currentCoordinate()`; the geocoder below is compiled for it but
+// never reached, because CLGeocoder needs network and a Watch with no phone nearby
+// has none (#22).
+#if os(iOS) || os(watchOS)
 import CoreLocation
 import Foundation
 
