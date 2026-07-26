@@ -158,7 +158,12 @@ struct MindGrapesShortcuts: AppShortcutsProvider {
                 "Capture in \(.applicationName)",
                 "\(.applicationName) capture",
             ],
-            shortTitle: "Capture Note",
+            // "MindGrapes Note" rather than "Capture Note": this is the name a
+            // person hunts for in the Shortcuts app, the Action Button picker,
+            // and the Watch's shortcuts list, where actions from every installed
+            // app sit in one flat list and "Capture Note" says nothing about
+            // whose note it is.
+            shortTitle: "MindGrapes Note",
             systemImageName: "square.and.pencil"
         )
         AppShortcut(
