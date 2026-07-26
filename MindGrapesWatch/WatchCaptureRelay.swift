@@ -118,15 +118,26 @@ final class WatchCaptureRelay: NSObject {
     /// usually has a fix ready by the time the text comes back, and ``submit(_:)``
     /// never waits for one.
     ///
-    /// Called both when the screen appears and when the Capture button is tapped,
-    /// and that pair is deliberate. The tap alone was a `TapGesture`, which
-    /// VoiceOver activation does not fire — it sends an accessibility activate
-    /// action instead — so VoiceOver users silently never got a location on a
-    /// watch capture. The appearance call covers them and the first capture; the
-    /// tap refreshes the fix for later ones, since the screen does not reappear
-    /// between captures. Calling twice is free: this cancels any request already
-    /// running.
+    /// Called from the Capture button's tap, from `activationDidCompleteWith`, and
+    /// whenever the phone pushes a new application context.
+    ///
+    /// The tap alone is not enough: it is a `TapGesture`, and VoiceOver activation
+    /// does not fire one — it sends an accessibility activate action — so VoiceOver
+    /// users silently never got a location at all. Nor is view appearance enough,
+    /// which was the first attempt: it runs before `WCSession.activate()` has
+    /// completed, so `receivedApplicationContext` is still empty, the guard below
+    /// returns, and nothing retries. The session's own callbacks are the only
+    /// moments when the answer is actually knowable.
+    ///
+    /// Calling it repeatedly is cheap and safe: a fix that is still fresh is kept
+    /// rather than thrown away and re-requested, which matters because CoreLocation
+    /// on a watch indoors can take ten seconds or more.
     func beginCapture() {
+        // Keep a good fix. Restarting unconditionally meant a tap three seconds
+        // after the app opened discarded the fix that had just landed and started
+        // the clock again, so the warm-up bought nothing.
+        if let pendingFix, pendingFix.coordinate(asOf: Date()) != nil { return }
+
         locationTask?.cancel()
         locationTask = nil
         pendingFix = nil
@@ -319,7 +330,22 @@ extension WatchCaptureRelay: WCSessionDelegate {
         Task { @MainActor in
             self.flushHeld()
             self.refreshStatus()
+            // The first moment `receivedApplicationContext` is readable, so the
+            // first moment a location request can legitimately start.
+            self.beginCapture()
         }
+    }
+
+    /// The phone's answer about location, arriving while the app is already up.
+    ///
+    /// Without this the wrist samples the toggle only at ``beginCapture()`` time,
+    /// so a user who turned location on over on the phone would not be honoured
+    /// until the next tap — or, for a VoiceOver user, not at all in this app run.
+    nonisolated func session(
+        _ session: WCSession,
+        didReceiveApplicationContext applicationContext: [String: Any]
+    ) {
+        Task { @MainActor in self.beginCapture() }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {

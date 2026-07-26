@@ -14,7 +14,7 @@ import UIKit
 /// verified switchover that routes captures through that session.
 final class MindGrapesAppDelegate: NSObject, UIApplicationDelegate {
     private var pathTrigger: NetworkPathTrigger?
-    private let watchSession = WatchSessionCoordinator()
+    private let watchSession = WatchSessionCoordinator.shared
 
     func application(
         _ application: UIApplication,

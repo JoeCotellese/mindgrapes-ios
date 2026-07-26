@@ -317,6 +317,10 @@ struct ConnectView: View {
         let shared = SharedDefaults(appGroup: AppGroup.identifier)
         shared?.includeLocation = includeLocation
         shared?.locationPitchAnswered = true
+        // Onboarding is the first time this answer exists, and a Watch paired
+        // before sign-in is already running. Push it now rather than leaving the
+        // wrist on its conservative default until the next foreground.
+        WatchSessionCoordinator.shared.pushSettings()
         busy = false
         onSignedIn()
     }

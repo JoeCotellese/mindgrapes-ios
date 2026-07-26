@@ -20,9 +20,19 @@ private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "watch
 /// tested in the kit; the app target has no test target (#24). Same split as
 /// `BackgroundUploader` over `BackgroundUploadReconciler`.
 final class WatchSessionCoordinator: NSObject, @unchecked Sendable {
+    /// The one coordinator, so a screen that changes a setting the Watch depends
+    /// on can push it without owning the session.
+    ///
+    /// A second instance would take over `WCSession.default`'s single delegate
+    /// slot and silently stop the first one receiving captures, so this is not
+    /// merely convenient — the type is a singleton whether or not it says so.
+    /// `init` is private, because a doc comment saying "do not construct another"
+    /// is not what stops anyone; the access level is.
+    static let shared = WatchSessionCoordinator()
+
     private let session: WCSession
 
-    init(session: WCSession = .default) {
+    private init(session: WCSession = .default) {
         self.session = session
         super.init()
     }
@@ -47,7 +57,11 @@ final class WatchSessionCoordinator: NSObject, @unchecked Sendable {
     /// phone, so it has to be pushed rather than looked up.
     func pushSettings() {
         guard session.activationState == .activated else { return }
-        let includeLocation = SharedDefaults()?.includeLocation ?? false
+        // Through ``WatchSettings`` rather than read straight off the toggle. The
+        // stored value defaults to `true` when the user has not answered the
+        // location pitch yet, and pushing that unset `true` makes the watch app
+        // raise a system location alert the moment it opens, unprompted (SPEC 9).
+        let includeLocation = WatchSettings.includeLocation(SharedDefaults())
         do {
             try session.updateApplicationContext(["includeLocation": includeLocation])
         } catch {
@@ -165,5 +179,14 @@ extension WatchSessionCoordinator: WCSessionDelegate {
     func sessionDidDeactivate(_ session: WCSession) {
         // Reactivate so a switched Watch can still hand captures over.
         session.activate()
+    }
+
+    /// Fires when the Watch app is installed, removed, or the paired Watch
+    /// changes. A freshly installed watch app has no application context at all,
+    /// so without this it would take no location until the phone next came to the
+    /// foreground — and the wrist must never guess, because guessing wrong means
+    /// prompting for a permission the user already declined (SPEC 9).
+    func sessionWatchStateDidChange(_ session: WCSession) {
+        pushSettings()
     }
 }

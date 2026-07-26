@@ -49,9 +49,10 @@ struct WristCaptureView: View {
                 //
                 // Not sufficient on its own: VoiceOver activation is an
                 // accessibility activate action, not a tap, so this never fires for
-                // a VoiceOver user. The `.task` below is what covers them. This
-                // stays because the screen does not reappear between captures, so
-                // it is what refreshes the fix for the second and later ones.
+                // a VoiceOver user. `WatchCaptureRelay` covers that by starting the
+                // request from the session's own callbacks instead, which is also
+                // the only place the phone's answer is knowable. This stays as the
+                // refresh for a sighted user's second and later captures.
                 .simultaneousGesture(TapGesture().onEnded { beginCapture() })
                 // Tint comes from the target's AccentColor asset, which carries the
                 // app icon's own colour. Without it a prominent button resolves to
@@ -65,14 +66,6 @@ struct WristCaptureView: View {
             }
             .padding(.horizontal, 2)
             .navigationTitle("MindGrapes")
-            // Starts the location request on appearance, not only on the tap
-            // gesture above, so a VoiceOver user gets a fix too. The gesture cannot
-            // reach them: VoiceOver sends an activate action rather than a tap.
-            //
-            // Costs a location request when the user opens the app and then does
-            // not capture, which on a one-button app is close to no one, and the
-            // fix expires on its own rather than being stamped on a later capture.
-            .task { beginCapture() }
         }
     }
 
