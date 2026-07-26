@@ -36,6 +36,11 @@ targets:
     dependencies:
       - package: MindGrapesKit
         product: MindGrapesKit
+      # Embeds the watch app into this bundle's Watch/ directory. The dependency
+      # is what makes the two apps counterparts, and WCSession only connects
+      # counterparts — an independent watch app could not reach the phone at all
+      # (SPEC 4.2, Decision 5).
+      - target: MindGrapesWatch
     # Signing.xcconfig supplies DEVELOPMENT_TEAM from an untracked local file for
     # device and release builds. It is empty by default, so a clone with nothing
     # set up still generates and builds for the simulator.
@@ -89,6 +94,45 @@ targets:
             CFBundleURLSchemes:
               - net.cotellese.mindgrapes
 
+  # The wrist. A companion of MindGrapes, not an independent watch app: it holds
+  # no tokens, no queue, and no networking, and hands each capture to the phone
+  # over WCSession (SPEC Decision 5, 4.2, 10.8). The bundle id sits inside the
+  # phone app's namespace because that is what makes the pair counterparts.
+  MindGrapesWatch:
+    type: application
+    platform: watchOS
+    # watchOS 27 to match the phone's iOS 27 floor. Nothing here needs 27 on its
+    # own; keeping the pair on one generation avoids a second availability story.
+    deploymentTarget: "27.0"
+    sources:
+      - path: MindGrapesWatch
+    dependencies:
+      - package: MindGrapesKit
+        product: MindGrapesKit
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes.watchkitapp
+        GENERATE_INFOPLIST_FILE: YES
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "0.1.0"
+        # No CODE_SIGN_ENTITLEMENTS: the wrist holds no tokens (so no Keychain
+        # access group) and no queue (so no App Group). SPEC 4.2.
+    info:
+      path: MindGrapesWatch/Info.plist
+      properties:
+        CFBundleDisplayName: MindGrapes
+        # Single-target watch app (watchOS 7+ packaging), and the counterpart
+        # pointer. Without WKCompanionAppBundleIdentifier the system does not
+        # treat the two apps as a pair and WCSession never connects.
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: net.cotellese.mindgrapes
+        # SPEC 9: the fix is taken on the wrist, because a capture made on a run
+        # should record where the runner was, not where the phone caught up.
+        NSLocationWhenInUseUsageDescription: MindGrapes tags a capture with where you made it, when you turn location on.
+
 schemes:
   MindGrapes:
     build:
@@ -97,4 +141,11 @@ schemes:
     run:
       config: Debug
     test:
+      config: Debug
+
+  MindGrapesWatch:
+    build:
+      targets:
+        MindGrapesWatch: all
+    run:
       config: Debug
