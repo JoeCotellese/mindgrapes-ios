@@ -21,7 +21,7 @@ private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "watch
 /// This type is deliberately thin. `WCSession` has no injectable seam and no
 /// behaviour without a paired counterpart, and the watch target has no test target
 /// (#24), so the decisions live in `MindGrapesKit` where they are tested:
-/// ``WristStatus/derive(outstanding:failed:phoneNearby:companionAppInstalled:)``
+/// ``WristStatus/derive(outstanding:failed:handedOver:phoneNearby:companionAppInstalled:)``
 /// and ``WatchCapturePayload``.
 @MainActor
 @Observable
@@ -50,6 +50,20 @@ final class WatchCaptureRelay: NSObject {
     /// prevent. It clears when the user captures again, because that is the one
     /// instruction the line gives them.
     private let lost = LostCaptureLog()
+
+    /// Captures handed to the outbox since launch and not yet reported as arrived.
+    ///
+    /// Exists so ``WristStatus/derive(outstanding:failed:handedOver:phoneNearby:companionAppInstalled:)``
+    /// can tell "everything arrived" apart from "nothing ever happened". An empty
+    /// outbox looks identical in both cases, which is how a bare reachability
+    /// change used to print "With the phone" about a capture that never existed
+    /// (#28). Spent when that report decays, which is what stops it standing as a
+    /// permanent claim of good health.
+    ///
+    /// In memory rather than durable, unlike ``lost``, and correctly so: this
+    /// describes an event being shown to the user right now, not a fact about a
+    /// capture. A relaunch has nothing to announce.
+    private var handedOver = 0
 
     /// The fix taken while the user was dictating. See ``beginCapture()``.
     private var pendingCoordinate: Coordinate?
@@ -127,9 +141,19 @@ final class WatchCaptureRelay: NSObject {
     /// discover a capture was empty, the wrist would already have reported a handoff
     /// that never happened.
     func submit(_ text: String) {
+        // A new capture attempt ends the previous one's report. Without this, a
+        // blank dictation two seconds after a successful hand-off decays back into
+        // "With the phone" — an announcement about the earlier capture, resurrected
+        // by the failure of this one.
+        handedOver = 0
+
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             status = .nothingHeard
             log.notice("dictation returned nothing usable; no transfer")
+            // Set without consulting `derive`, so left standing it would hide a
+            // pending loss report indefinitely — no WCSession callback is
+            // guaranteed to arrive and recompute it.
+            decayToDerived(after: .seconds(4))
             return
         }
 
@@ -144,15 +168,17 @@ final class WatchCaptureRelay: NSObject {
             id: UUID(), content: text, occurredAt: Date(), coordinate: coordinate
         ) else {
             status = .nothingHeard
+            decayToDerived(after: .seconds(4))
             return
         }
 
-        // Cleared only once a capture is actually going out, so neither blank-input
-        // return above wipes a loss report the user still needs. The user has acted
-        // on "Not handed off. Capture again.", so that report has done its job.
-        // Cleared here rather than on a successful transfer, so an unrelated
-        // success cannot silently erase news the user never saw.
-        lost.clear()
+        // Cleared only when the loss report is the thing on screen right now, which
+        // is the only case where capturing again is plausibly the user acting on
+        // it. Clearing on every capture would discard a loss the user was never
+        // shown: `waiting` outranks `failed`, so a loss recorded while other
+        // transfers are still in flight stays queued behind them, and an
+        // unconditional clear here would destroy it before it ever rendered.
+        if case .failed = status { lost.clear() }
 
         handOver(payload)
 
@@ -172,6 +198,7 @@ final class WatchCaptureRelay: NSObject {
             return
         }
         session.transferUserInfo(payload.userInfo)
+        handedOver += 1
         log.notice("handed \(payload.id, privacy: .public) to the outbox, coordinate: \(payload.coordinate != nil)")
     }
 
@@ -193,37 +220,62 @@ final class WatchCaptureRelay: NSObject {
             return
         }
 
+        let outstanding = session.outstandingUserInfoTransfers.count
+
+        // A transfer inherited from a previous launch is itself evidence something
+        // was handed over. watchOS terminates this app on wrist-down and the outbox
+        // survives, so without this a capture made before the app was killed
+        // completes into `.ready` — the neutral first-launch line — and reads as if
+        // it had evaporated.
+        handedOver = max(handedOver, outstanding)
+
         let derived = WristStatus.derive(
-            outstanding: session.outstandingUserInfoTransfers.count,
+            outstanding: outstanding,
             failed: lost.count,
+            handedOver: handedOver,
             phoneNearby: session.isReachable,
             companionAppInstalled: session.isCompanionAppInstalled
         )
 
-        // `withPhone` describes one past event. Left standing it reads as a guarantee
-        // of good health in the exact screen position where every other app prints
-        // "Saved", so it decays to the neutral line.
-        guard derived == .withPhone else {
-            status = derived
-            return
+        let previous = status
+        status = derived
+
+        // `withPhone` describes one past event. Left standing it reads as a
+        // guarantee of good health in the exact screen position where every other
+        // app prints "Saved", so it decays to the neutral line.
+        //
+        // The old version of this inferred "nothing was handed over" from the
+        // status still being `.activating`, which was wrong the moment anything
+        // else re-derived — a bare reachability change on an idle app printed
+        // "With the phone" about a capture that never existed (#28). `derive` now
+        // takes `handedOver` and answers that itself.
+        // On the transition only. Re-arming on every derivation lets a flapping
+        // phone — reachability changes faster than ten seconds in ordinary use —
+        // keep "With the phone" on screen indefinitely, which is the standing
+        // claim of good health this decay exists to prevent.
+        if derived == .withPhone, previous != .withPhone {
+            decayToDerived(after: .seconds(10))
         }
-        if status == .activating {
-            // Nothing was handed over this session; there is no event to report.
-            status = .ready
-            return
-        }
-        status = .withPhone
-        expireWithPhone()
     }
 
     private var expiry: Task<Void, Never>?
 
-    private func expireWithPhone() {
+    /// Lets a status that describes a moment fall back to whatever is true after
+    /// it. Used by `.withPhone` and by ``submit(_:)``'s `.nothingHeard`, both of
+    /// which are announcements rather than states — and `.nothingHeard` in
+    /// particular is set without consulting `derive`, so left standing it hides a
+    /// loss the user still needs to see.
+    private func decayToDerived(after duration: Duration) {
         expiry?.cancel()
+        let expiring = status
         expiry = Task {
-            try? await Task.sleep(for: .seconds(10))
-            guard !Task.isCancelled, status == .withPhone else { return }
-            status = .ready
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled, status == expiring else { return }
+            // Spending the hand-off is what lets `derive` return `.ready` on the
+            // next pass. Without it the recompute would produce `.withPhone` again
+            // and re-arm this timer forever.
+            if expiring == .withPhone { handedOver = 0 }
+            refreshStatus()
         }
     }
 }
