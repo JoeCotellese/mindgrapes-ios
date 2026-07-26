@@ -2,6 +2,7 @@
 // ABOUTME: ponytail: prototype only — /implement replaces this with WatchCaptureRelay and deletes it.
 
 import Foundation
+import MindGrapesKit
 import Observation
 import WatchKit
 
@@ -104,21 +105,17 @@ final class PrototypeHandoff {
     }
 
     private func recompute() {
-        status = if failures > 0 {
-            .failed(count: failures)
-        } else if outstanding > 0 {
-            .waiting(count: outstanding)
-        } else {
-            .withPhone
-        }
+        status = WristStatus.derive(outstanding: outstanding, failed: failures)
     }
 
     private static func status(named name: String) -> WristStatus? {
         switch name {
         case "activating": .activating
         case "ready": .ready
-        case "waiting": .waiting(count: 1)
-        case "waitingSeveral": .waiting(count: 3)
+        case "waiting": .waiting(count: 1, phoneNearby: true)
+        case "waitingSeveral": .waiting(count: 3, phoneNearby: true)
+        case "notNearby": .waiting(count: 1, phoneNearby: false)
+        case "appMissing": .companionAppMissing
         case "withPhone": .withPhone
         case "failed": .failed(count: 1)
         case "nothingHeard": .nothingHeard

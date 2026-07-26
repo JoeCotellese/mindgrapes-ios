@@ -1,6 +1,7 @@
 // ABOUTME: The whole watch app: one capture button and one honest status line.
 // ABOUTME: Takes its status and its submit action from outside so it renders without a WCSession.
 
+import MindGrapesKit
 import SwiftUI
 
 /// The wrist's only screen (SPEC 10.8).
@@ -82,11 +83,19 @@ struct WristCaptureView: View {
 }
 
 #Preview("Waiting") {
-    WristCaptureView(status: .waiting(count: 1), submit: { _ in })
+    WristCaptureView(status: .waiting(count: 1, phoneNearby: true), submit: { _ in })
 }
 
 #Preview("Waiting, several") {
-    WristCaptureView(status: .waiting(count: 3), submit: { _ in })
+    WristCaptureView(status: .waiting(count: 3, phoneNearby: true), submit: { _ in })
+}
+
+#Preview("Phone not nearby") {
+    WristCaptureView(status: .waiting(count: 1, phoneNearby: false), submit: { _ in })
+}
+
+#Preview("No app on the phone") {
+    WristCaptureView(status: .companionAppMissing, submit: { _ in })
 }
 
 #Preview("With the phone") {
