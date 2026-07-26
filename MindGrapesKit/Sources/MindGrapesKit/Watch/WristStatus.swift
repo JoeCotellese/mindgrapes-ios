@@ -40,8 +40,11 @@ public enum WristStatus: Equatable, Sendable {
     /// guarantee of good health.
     case withPhone
 
-    /// `count` transfers finished with an error and will not retry on their own.
-    /// The wrist cannot fix this, so the line names the one thing the user can do.
+    /// `count` captures failed, were handed back to the outbox once, and failed
+    /// again. They are gone: `transferUserInfo` does not retry an errored transfer
+    /// on its own, and ``WatchCapturePayload/maximumAttempts`` allows exactly one
+    /// more. The line names the only thing that recovers them, which is capturing
+    /// again.
     case failed(count: Int)
 
     /// The phone has no MindGrapes app, so nothing handed over will ever be taken.
@@ -71,8 +74,9 @@ public enum WristStatus: Equatable, Sendable {
     ///
     /// - Parameters:
     ///   - outstanding: `WCSession.outstandingUserInfoTransfers.count`.
-    ///   - failed: transfers that came back with a non-nil error and were not
-    ///     retried.
+    ///   - failed: transfers that came back with a non-nil error and have no
+    ///     retry left. A first failure is re-handed rather than counted here, so
+    ///     this only ever means "gone".
     ///   - phoneNearby: `WCSession.isReachable`.
     ///   - companionAppInstalled: `WCSession.isCompanionAppInstalled`.
     public static func derive(

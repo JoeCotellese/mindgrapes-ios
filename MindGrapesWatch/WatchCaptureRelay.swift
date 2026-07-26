@@ -28,10 +28,28 @@ private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "watch
 final class WatchCaptureRelay: NSObject {
     private(set) var status: WristStatus = .activating
 
-    /// Transfers that came back with an error. Counted separately because a failed
-    /// transfer is removed from `outstandingUserInfoTransfers` exactly like a
-    /// successful one, so the outbox emptying is not evidence of success.
-    private var failures = 0
+    /// Transfers that came back with an error and have no retry left. Counted
+    /// separately because a failed transfer is removed from
+    /// `outstandingUserInfoTransfers` exactly like a successful one, so the outbox
+    /// emptying is not evidence of success.
+    ///
+    /// Captures that are actually gone. A first failure is re-handed rather than
+    /// recorded, so the status line never reports a loss the relay is still
+    /// working on.
+    ///
+    /// **Durable, and that is load-bearing.** The final failure of a capture is
+    /// usually delivered to a background relaunch with the screen facing nobody,
+    /// and watchOS terminates the app again moments later — so an in-memory count
+    /// would be discarded before it was ever rendered and the user would never
+    /// learn the capture was gone. See ``LostCaptureLog``.
+    ///
+    /// Deliberately *not* cleared by a later successful transfer. A lost capture
+    /// stays lost, and a success on some other capture is not news about it: the
+    /// old behaviour let capture B's success erase the report that capture A was
+    /// gone, which is the same class of false claim ``WristStatus`` exists to
+    /// prevent. It clears when the user captures again, because that is the one
+    /// instruction the line gives them.
+    private let lost = LostCaptureLog()
 
     /// The fix taken while the user was dictating. See ``beginCapture()``.
     private var pendingCoordinate: Coordinate?
@@ -120,12 +138,21 @@ final class WatchCaptureRelay: NSObject {
         locationTask?.cancel()
         locationTask = nil
 
+        // Unreachable while this check and `nonBlank` trim the same character set,
+        // and kept anyway so a future change to either one fails closed.
         guard let payload = WatchCapturePayload(
             id: UUID(), content: text, occurredAt: Date(), coordinate: coordinate
         ) else {
             status = .nothingHeard
             return
         }
+
+        // Cleared only once a capture is actually going out, so neither blank-input
+        // return above wipes a loss report the user still needs. The user has acted
+        // on "Not handed off. Capture again.", so that report has done its job.
+        // Cleared here rather than on a successful transfer, so an unrelated
+        // success cannot silently erase news the user never saw.
+        lost.clear()
 
         handOver(payload)
 
@@ -168,7 +195,7 @@ final class WatchCaptureRelay: NSObject {
 
         let derived = WristStatus.derive(
             outstanding: session.outstandingUserInfoTransfers.count,
-            failed: failures,
+            failed: lost.count,
             phoneNearby: session.isReachable,
             companionAppInstalled: session.isCompanionAppInstalled
         )
@@ -231,32 +258,47 @@ extension WatchCaptureRelay: WCSessionDelegate {
     }
 
     /// The outbox emptying is not success. A transfer that finishes *with* an error
-    /// is removed from `outstandingUserInfoTransfers` exactly like a successful one,
-    /// so the error is what decides and it is counted rather than inspected later.
+    /// is removed from `outstandingUserInfoTransfers` exactly like a successful one
+    /// and the system will not try it again, so the error is what decides.
+    ///
+    /// The payload comes back with the callback, which is the only reason a lost
+    /// capture is recoverable at all: it is handed back to the outbox once before
+    /// the wrist gives up and says so. A redelivery costs nothing, because the
+    /// payload carries its own id and the phone's queue recognises one it has
+    /// already stored.
     nonisolated func session(
         _ session: WCSession,
         didFinish userInfoTransfer: WCSessionUserInfoTransfer,
         error: (any Error)?
     ) {
-        let failed = error != nil
-        if let error {
-            log.error("transfer failed: \(error.localizedDescription, privacy: .public)")
+        guard let error else {
+            Task { @MainActor in self.refreshStatus() }
+            return
         }
+
+        log.error("transfer failed: \(error.localizedDescription, privacy: .public)")
+
+        // Parsed out here, synchronously, because `[String: Any]` is not Sendable
+        // and cannot cross into the Task. The payload can.
+        let spent = WatchCapturePayload(userInfo: userInfoTransfer.userInfo)
+        let again = spent?.retried()
+
         Task { @MainActor in
-            if failed {
-                self.failures += 1
+            guard let again else {
+                // Out of budget, or the payload came back unreadable. Either way
+                // this capture is gone and the wrist has to say so. Recorded under
+                // the capture's own id where one survived the parse, so a
+                // redelivered completion cannot inflate the count.
+                self.lost.record(spent?.id ?? UUID())
                 WKInterfaceDevice.current().play(.failure)
-            } else {
-                // A clean transfer clears the count. Left monotonic, one failure
-                // pins the wrist on "Not handed off. Open the phone app." for the
-                // rest of the process — including for captures that did land,
-                // which trains the user to disbelieve the only signal they get.
-                //
-                // ponytail: a whole-count reset, so with two transfers in flight a
-                // success can clear a sibling's failure before the user has read
-                // it. Track unresolved transfer ids instead if that becomes real.
-                self.failures = 0
+                self.refreshStatus()
+                return
             }
+            log.notice("re-handing \(again.id, privacy: .public), attempt \(again.attempt)")
+            // Through handOver rather than straight to the session, so the retry
+            // gets the same activation guard every other send has: transferUserInfo
+            // raises on a session that is not activated, with nothing to catch.
+            self.handOver(again)
             self.refreshStatus()
         }
     }
