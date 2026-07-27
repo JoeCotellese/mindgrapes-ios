@@ -29,7 +29,9 @@ settings:
     # CURRENT_PROJECT_VERSION on the command line, which reaches both targets from
     # here. (#18 was this class of plist mismatch.)
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: "0.1.0"
+    # Year.month.release, so the version says when it shipped rather than how many
+    # features went into it. First App Store submission.
+    MARKETING_VERSION: "2026.7.1"
 
 packages:
   MindGrapesKit:

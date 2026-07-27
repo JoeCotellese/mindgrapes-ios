@@ -118,8 +118,9 @@ final class WatchCaptureRelay: NSObject {
     /// usually has a fix ready by the time the text comes back, and ``submit(_:)``
     /// never waits for one.
     ///
-    /// Called from the Capture button's tap, from `activationDidCompleteWith`, and
-    /// whenever the phone pushes a new application context.
+    /// Called from the Capture button's tap, from `activationDidCompleteWith`,
+    /// whenever the phone pushes a new application context, and whenever the scene
+    /// becomes active.
     ///
     /// The tap alone is not enough: it is a `TapGesture`, and VoiceOver activation
     /// does not fire one — it sends an accessibility activate action — so VoiceOver
@@ -127,27 +128,49 @@ final class WatchCaptureRelay: NSObject {
     /// which was the first attempt: it runs before `WCSession.activate()` has
     /// completed, so `receivedApplicationContext` is still empty, the guard below
     /// returns, and nothing retries. The session's own callbacks are the only
-    /// moments when the answer is actually knowable.
+    /// moments when the phone's answer becomes knowable — but they only fire once
+    /// per launch, so on a resume none of the three fired at all and a VoiceOver
+    /// user was back to no location (#34). `scenePhase` is what covers the resume.
+    ///
+    /// One case is deliberately still uncovered: a VoiceOver user's *second*
+    /// capture in one run, more than ``TimedCoordinate/freshness`` after the first,
+    /// with no wrist-down and no context push in between. Closing it means either
+    /// an `.accessibilityAction` that would override the `TextFieldLink` activation
+    /// that presents the input sheet, or a request fired after every submit whether
+    /// or not another capture follows. A single wrist drop closes the window.
     ///
     /// Calling it repeatedly is cheap and safe: a fix that is still fresh is kept
-    /// rather than thrown away and re-requested, which matters because CoreLocation
-    /// on a watch indoors can take ten seconds or more.
+    /// rather than thrown away and re-requested.
+    ///
+    /// A request already in flight is not protected the same way: a later call
+    /// cancels it and starts over, as it always has. A guard against that was
+    /// written for #34 and taken back out. It swallowed the trigger rather than
+    /// deferring it, so a resume landing mid-request got nothing at all once that
+    /// request timed out — #34 again by another route — and its early return
+    /// skipped the discard below. Both shapes have a narrow failure; this is the
+    /// one that has been running.
     func beginCapture() {
-        // Keep a good fix. Restarting unconditionally meant a tap three seconds
-        // after the app opened discarded the fix that had just landed and started
-        // the clock again, so the warm-up bought nothing.
-        if let pendingFix, pendingFix.coordinate(asOf: Date()) != nil { return }
-
-        locationTask?.cancel()
-        locationTask = nil
-        pendingFix = nil
-
+        // First, and discarding rather than returning bare. This is the path a
+        // toggled-off phone takes, and a fix that already landed under the old
+        // answer would otherwise sit in memory for the whole freshness window and
+        // be stamped on a capture the user made after saying no.
+        //
         // No fix, and no permission prompt, unless the user asked for located
         // captures on the phone. The toggle lives in App Group UserDefaults the Watch
         // cannot read, so the phone pushes it with updateApplicationContext and the
         // system holds the last value for us. Absent means off: the wrist must never
         // prompt for something the user already declined on the phone (SPEC 9).
-        guard session.receivedApplicationContext["includeLocation"] as? Bool == true else { return }
+        guard session.receivedApplicationContext["includeLocation"] as? Bool == true else {
+            discardPendingLocation()
+            return
+        }
+
+        // Keep a good fix. Restarting unconditionally meant a tap three seconds
+        // after the app opened discarded the fix that had just landed and started
+        // the clock again, so the warm-up bought nothing.
+        if let pendingFix, pendingFix.coordinate(asOf: Date()) != nil { return }
+
+        discardPendingLocation()
 
         // currentCoordinate deliberately skips the reverse geocode: CLGeocoder needs
         // network and a Watch with no phone nearby has none. The phone labels the
@@ -157,6 +180,14 @@ final class WatchCaptureRelay: NSObject {
             guard !Task.isCancelled, let coordinate else { return }
             pendingFix = TimedCoordinate(coordinate: coordinate, takenAt: Date())
         }
+    }
+
+    /// Drops the fix in hand and the request on its way, so neither survives the
+    /// reason for dropping them.
+    private func discardPendingLocation() {
+        locationTask?.cancel()
+        locationTask = nil
+        pendingFix = nil
     }
 
     /// Validates on the wrist, stamps identity on the wrist, hands over immediately.
