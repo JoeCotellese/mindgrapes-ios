@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ABOUTME: Apple privacy manifest for the watch app, which is its own bundle with its own reasons. -->
+<!-- ABOUTME: Separate from the phone's because the wrist has no App Group, so its defaults reason differs. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<!-- The wrist has no networking of its own (SPEC Decision 5): it hands a
+	     capture to WCSession and the phone uploads it. Declared anyway, because
+	     the wrist is where this data is taken and the App Store label covers the
+	     whole bundle. No photo entry: the watch captures dictated text only. -->
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<!-- The fix is taken on the wrist, not on the phone at receive time, so a
+		     capture made on a run records where the runner was (SPEC 9). -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePreciseLocation</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+	</array>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<!-- 1C8F.1, not the phone's CA92.1: LostCaptureLog is the wrist's own
+			     bookkeeping in UserDefaults.standard, readable by nothing else.
+			     CA92.1 would be invalid here anyway, since the watch target ships
+			     no entitlements and is deliberately not an App Group member
+			     (SPEC 4.2). -->
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>1C8F.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

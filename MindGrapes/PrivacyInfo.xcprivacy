@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ABOUTME: Apple privacy manifest for the iPhone/iPad app: required-reason APIs and collected data. -->
+<!-- ABOUTME: Declares only what the code actually does; over-declaring is a claim we cannot support. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- No tracking. No analytics SDK, no crash reporter, no third-party
+	     endpoint: MindGrapesKit has zero package dependencies and the only host
+	     the app talks to is the one the user typed in (SPEC 11). -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<!-- Everything here goes to the user's own self-hosted Mind Grapes server
+	     over TLS and nowhere else. "Linked" because a capture lands on the
+	     user's account on that server; the app has no anonymous mode. -->
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array>
+		<!-- The downscaled JPEG derivative of a photo capture (SPEC 7.2 step 2).
+		     Originals never leave the device. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePhotosorVideos</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<!-- Note text, on-device OCR text, the on-device generated description,
+		     the reverse-geocoded place label, and free-form labels: the capture
+		     payload of SPEC 6.3 and 6.4. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<!-- Precise rather than coarse: SPEC 9 asks CoreLocation for
+		     kCLLocationAccuracyHundredMeters, and 100 m resolves far finer than
+		     the 3 km2 that would make a fix "coarse" to App Store Connect. Sent
+		     only while the Include Location toggle is on, and a capture ships
+		     without coordinates rather than waiting for a fix. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePreciseLocation</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- One required-reason category, because one is what the code touches.
+	     Grepped for file timestamps, disk space, system boot time, and active
+	     keyboards and found none of them: TimedCoordinate measures freshness on
+	     Date (issue #35), not on systemUptime or mach_absolute_time. -->
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<!-- CA92.1, not 1C8F.1: every read and write on this target goes
+			     through SharedDefaults, which opens UserDefaults(suiteName:) on
+			     the group.net.cotellese.mindgrapes App Group so app, intents, and
+			     extensions agree on one server URL and one location toggle
+			     (SPEC 4.2). The App Group membership CA92.1 requires is in
+			     MindGrapes.entitlements. -->
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

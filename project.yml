@@ -42,6 +42,11 @@ targets:
     type: application
     platform: iOS
     sources:
+      # The directory source carries MindGrapes/PrivacyInfo.xcprivacy, which
+      # XcodeGen files into Resources on its own. Do not add a second explicit
+      # entry for it: that produces a duplicate build file, and the manifest has
+      # to sit at the bundle root exactly once or Apple's scan reads the wrong
+      # one. `fd -HI PrivacyInfo.xcprivacy build/` is the check.
       - path: MindGrapes
     dependencies:
       - package: MindGrapesKit
@@ -113,6 +118,11 @@ targets:
     # own; keeping the pair on one generation avoids a second availability story.
     deploymentTarget: "27.0"
     sources:
+      # Carries MindGrapesWatch/PrivacyInfo.xcprivacy, which is its own file and
+      # not a copy of the phone's: the wrist reads `UserDefaults.standard`
+      # (`LostCaptureLog`) rather than the App Group, so its required-reason is
+      # 1C8F.1 where the phone's is CA92.1. A watch app is a separate bundle and
+      # Apple scans it separately.
       - path: MindGrapesWatch
       # Shared with the phone target rather than copied. icon.json already declares
       # `"circles": ["watchOS"]`, so the watch variant is authored; without this the
