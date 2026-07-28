@@ -18,6 +18,7 @@ struct SettingsView: View {
     /// sign-in. The caller dismisses the sheet.
     let onSignOut: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var includeLocation = SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation ?? true
 
     private var serverURL: String {
         SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig?.baseURL.absoluteString ?? "Not connected"
@@ -31,6 +32,23 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+                Section {
+                    // Lives here rather than on the capture screen per SPEC 10.1:
+                    // it is a standing preference, and the capture screen is for
+                    // the one thing you came to do.
+                    Toggle("Include location", isOn: $includeLocation)
+                        .onChange(of: includeLocation) { _, on in
+                            SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation = on
+                            // The Watch cannot read this App Group, so the value has
+                            // to be pushed. Without this it reached the wrist only on
+                            // the next activation or foreground, and a user who turned
+                            // location on and then raised their wrist captured without
+                            // one.
+                            WatchSessionCoordinator.shared.pushSettings()
+                        }
+                } footer: {
+                    Text("Tags each capture with where you were, so you can ask about places later.")
                 }
                 Section {
                     Button("Sign out", role: .destructive, action: signOut)

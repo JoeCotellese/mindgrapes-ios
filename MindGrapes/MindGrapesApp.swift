@@ -1,5 +1,5 @@
 // ABOUTME: App entry point for the MindGrapes iOS capture app.
-// ABOUTME: Shows the throwaway sign-in screen, which pushes the capture screen once signed in (issue 17 replaces both).
+// ABOUTME: Hands straight to RootView, which gates between the connect screen and capture on stored credentials.
 
 import SwiftUI
 
