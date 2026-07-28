@@ -62,6 +62,7 @@ struct CaptureStatusTests {
         #expect(CaptureStatus.saved(experienceID: "x").isFailure == false)
         #expect(CaptureStatus.ready.isFailure == false)
         #expect(CaptureStatus.working.isFailure == false)
+        #expect(CaptureStatus.syncing.isFailure == false)
         #expect(CaptureStatus.needsSignIn.isFailure)
         #expect(CaptureStatus.sendFailed.isFailure)
         #expect(CaptureStatus.captureLost.isFailure)
@@ -92,40 +93,109 @@ struct CaptureStatusTests {
         #expect(CaptureStatus(outcome: .rejected(reason: "save_failed")).draftBecameDurable == false)
     }
 
+    // MARK: - Losing location on the way
+
+    @Test("A landed capture that lost its location says both things, not one")
+    func successCombinesWithLocationNews() {
+        // An earlier version replaced the outcome outright. That reads fine for a
+        // note, where the emptied field confirms the save, and loses the only
+        // confirmation a photo capture ever gets.
+        #expect(CaptureStatus.saved(experienceID: "x").resolving(locationJustDenied: true) == .savedWithoutLocation)
+        #expect(CaptureStatus.queued.resolving(locationJustDenied: true) == .savedWithoutLocation)
+        #expect(CaptureStatus.savedWithoutLocation.draftBecameDurable)
+        #expect(CaptureStatus.savedWithoutLocation.isFailure == false)
+    }
+
+    @Test("Anything needing the user outranks the location news")
+    func failureOutranksLocationNews() {
+        #expect(CaptureStatus.sendFailed.resolving(locationJustDenied: true) == .sendFailed)
+        #expect(CaptureStatus.captureLost.resolving(locationJustDenied: true) == .captureLost)
+        #expect(CaptureStatus.needsSignIn.resolving(locationJustDenied: true) == .needsSignIn)
+    }
+
+    @Test("Nothing changes when location was not just denied")
+    func noLocationNewsIsIdentity() {
+        #expect(CaptureStatus.saved(experienceID: "x").resolving(locationJustDenied: false)
+            == .saved(experienceID: "x"))
+        #expect(CaptureStatus.queued.resolving(locationJustDenied: false) == .queued)
+    }
+
     // MARK: - Drain results
 
-    @Test("A drain that lands everything reads as synced")
+    @Test("A drain that empties the queue reads as synced")
     func drainAllSucceeded() {
-        #expect(CaptureStatus(drainedPending: 0, sawFailure: false) == .synced)
+        #expect(
+            CaptureStatus(outstanding: 0, parked: false, failedThisPass: false, deliveredThisPass: true)
+                == .synced
+        )
     }
 
-    @Test("A drain with work left over says so rather than claiming success")
+    @Test("Backlog left in the queue is reported, not rounded down to success")
     func drainWithPendingLeft() {
-        #expect(CaptureStatus(drainedPending: 3, sawFailure: false) == .pending(count: 3))
+        #expect(
+            CaptureStatus(outstanding: 3, parked: false, failedThisPass: false, deliveredThisPass: true)
+                == .pending(count: 3)
+        )
     }
 
-    @Test("A failure during a drain outranks a leftover count")
+    @Test("A capture in retry backoff still counts as outstanding")
+    func backedOffCaptureStillCounts() {
+        // The bug this fixes: backoff leaves a record pending-but-not-due, so it
+        // never appears in a drain pass. Counting only what the pass touched
+        // announced "All captures synced" over a queue that still owed a delivery.
+        // The count comes from the queue, so a pass that delivered one capture
+        // while another sits in backoff reports the backlog.
+        #expect(
+            CaptureStatus(outstanding: 1, parked: false, failedThisPass: false, deliveredThisPass: true)
+                == .pending(count: 1)
+        )
+    }
+
+    @Test("A failure in this pass outranks a leftover count")
     func drainFailureWins() {
         // Otherwise "2 still pending" reads as patience when the truth is that the
         // server refused them.
-        #expect(CaptureStatus(drainedPending: 2, sawFailure: true) == .sendFailed)
+        #expect(
+            CaptureStatus(outstanding: 2, parked: false, failedThisPass: true, deliveredThisPass: true)
+                == .sendFailed
+        )
     }
 
-    @Test("A drain that had nothing to do leaves the screen alone")
+    @Test("A pass that had nothing to do leaves the screen alone")
     func emptyDrainIsReady() {
-        #expect(CaptureStatus(drainedPending: 0, sawFailure: false, drainedAnything: false) == .ready)
+        #expect(
+            CaptureStatus(outstanding: 0, parked: false, failedThisPass: false, deliveredThisPass: false)
+                == .ready
+        )
     }
 
-    @Test("A drain that parked everything for re-auth must not claim a sync")
+    @Test("A contended pass reports the real backlog rather than an empty queue")
+    func contendedDrainReportsBacklog() {
+        // drainOnce returns [] when another drain holds the gate. Read as "nothing
+        // to do" that silently cleared the line; the queue-wide count makes the
+        // contended pass indistinguishable from a quiet one, which is correct.
+        #expect(
+            CaptureStatus(outstanding: 2, parked: false, failedThisPass: false, deliveredThisPass: false)
+                == .pending(count: 2)
+        )
+    }
+
+    @Test("A queue parked for re-auth must not claim a sync")
     func drainParkedForAuth() {
         // A parked record is neither pending nor failed, so without this it fell
         // through to .synced and announced "All captures synced" over a queue
         // that had delivered nothing.
-        #expect(CaptureStatus(drainedPending: 0, sawFailure: false, sawAuthRequired: true) == .needsSignIn)
+        #expect(
+            CaptureStatus(outstanding: 0, parked: true, failedThisPass: false, deliveredThisPass: false)
+                == .needsSignIn
+        )
     }
 
     @Test("Re-auth outranks both leftovers and failures, because it is the unblocking action")
     func authOutranksTheRest() {
-        #expect(CaptureStatus(drainedPending: 4, sawFailure: true, sawAuthRequired: true) == .needsSignIn)
+        #expect(
+            CaptureStatus(outstanding: 4, parked: true, failedThisPass: true, deliveredThisPass: true)
+                == .needsSignIn
+        )
     }
 }

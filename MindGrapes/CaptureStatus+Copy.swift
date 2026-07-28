@@ -10,10 +10,13 @@ extension CaptureStatus {
         switch self {
         case .ready: ""
         case .working: "Saving…"
+        case .syncing: "Syncing…"
         case .saved: "Saved"
         case .queued: "Saved. It'll sync when you're online."
-        case .pending(let count) where count > 1: "Saved. \(count) captures still syncing."
-        case .pending: "Saved. Still syncing."
+        // No "Saved." prefix: this state has two producers, and the foreground
+        // drain reaches it on a cold launch where the user has saved nothing.
+        case .pending(let count) where count > 1: "\(count) captures still syncing."
+        case .pending: "1 capture still syncing."
         case .synced: "All captures synced"
         case .needsSignIn: "Saved. Sign in again to send it."
         case .sendFailed: "Saved here, but the server refused it."
@@ -23,18 +26,22 @@ extension CaptureStatus {
         case .storageUnavailable: "Couldn't open local storage. Try reopening the app."
         case .notSignedIn: "Sign in to start capturing."
         case .locationOff: "Location is off. Turn it on in Settings to tag captures."
+        case .savedWithoutLocation: "Saved without location. Turn it on in Settings."
         }
     }
 
-    /// The leading symbol, or `nil` for states that carry no icon. `working` has
-    /// none because the screen shows a spinner in its place.
+    /// Whether the screen shows a spinner in place of a symbol.
+    var isBusy: Bool { self == .working || self == .syncing }
+
+    /// The leading symbol, or `nil` for states that carry no icon. The in-flight
+    /// states have none because the screen shows a spinner in their place.
     var symbolName: String? {
         switch self {
-        case .ready, .working: nil
+        case .ready, .working, .syncing: nil
         case .saved, .synced: "checkmark.circle.fill"
         case .queued, .pending: "arrow.triangle.2.circlepath"
         case .needsSignIn, .notSignedIn: "person.crop.circle.badge.exclamationmark"
-        case .locationOff: "location.slash"
+        case .locationOff, .savedWithoutLocation: "location.slash"
         case .sendFailed, .nothingToSave, .unreadableImage, .captureLost, .storageUnavailable:
             "exclamationmark.circle.fill"
         }

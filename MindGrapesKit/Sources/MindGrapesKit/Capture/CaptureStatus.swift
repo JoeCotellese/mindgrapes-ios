@@ -15,8 +15,12 @@ public enum CaptureStatus: Equatable, Sendable {
     /// Nothing to report. The resting state.
     case ready
 
-    /// A capture or a drain is in flight.
+    /// A capture the user just made is in flight.
     case working
+
+    /// A background flush of the queue is in flight. Distinct from ``working``
+    /// because it is not the user's capture and must not say "Saving".
+    case syncing
 
     /// Delivered and confirmed by the server within the budget.
     case saved(experienceID: String)
@@ -62,6 +66,10 @@ public enum CaptureStatus: Equatable, Sendable {
     /// carried no location.
     case locationOff
 
+    /// The capture landed **and** location was just turned off, said in one line
+    /// because there is only one line. See ``resolving(locationJustDenied:)``.
+    case savedWithoutLocation
+
     /// The state a finished capture leaves on screen.
     ///
     /// The `rejected` reasons are split rather than collapsed because they differ
@@ -88,35 +96,61 @@ public enum CaptureStatus: Equatable, Sendable {
 
     /// The state a drain pass leaves on screen.
     ///
+    /// The backlog inputs describe the **whole queue**, not the records the pass
+    /// happened to touch. Deriving them from a pass is what made an earlier
+    /// version claim "All captures synced" over a queue that still held work: a
+    /// record in retry backoff is `pending` but not yet due, so
+    /// ``CaptureQueue/claimDue(now:)`` never returns it and it counted as zero.
+    /// A contended pass has the same shape — ``CaptureDrainer/drainOnce(now:)``
+    /// returns `[]` when another drain holds the gate, which is indistinguishable
+    /// from an empty queue unless the count comes from the queue itself.
+    ///
     /// - Parameters:
-    ///   - drainedPending: captures still not delivered when the pass ended.
-    ///   - sawFailure: whether any record in the pass ended terminally failed.
-    ///   - sawAuthRequired: whether any record parked for re-auth. Such a record
-    ///     is neither pending nor failed, so without this input a pass that
-    ///     parked everything falls through to ``synced`` and announces a delivery
-    ///     that did not happen.
-    ///   - drainedAnything: whether the pass had any records at all. A pass over
-    ///     an empty queue is the common case on every foreground and must not
-    ///     announce a sync that did not happen.
-    public init(
-        drainedPending: Int,
-        sawFailure: Bool,
-        sawAuthRequired: Bool = false,
-        drainedAnything: Bool = true
-    ) {
+    ///   - outstanding: every record still owed a delivery — `pending` and
+    ///     `inFlight` alike, due or not.
+    ///   - parked: whether any record is waiting on re-auth. Such a record is
+    ///     neither pending nor failed, so without this a queue that parked
+    ///     everything falls through to ``synced``.
+    ///   - failedThisPass: whether a record failed terminally *in this pass*.
+    ///     Deliberately not queue-wide: a failure sticks around for the retention
+    ///     window, and reading it queue-wide would re-announce week-old news on
+    ///     every foreground. Old failures belong in the recent-captures list.
+    ///   - deliveredThisPass: whether the pass actually landed anything. Separates
+    ///     "everything synced" from "there was nothing to do", which an
+    ///     `outstanding` of zero cannot do on its own.
+    public init(outstanding: Int, parked: Bool, failedThisPass: Bool, deliveredThisPass: Bool) {
         // Signing in again is the one action that unblocks the queue, so it is the
         // one to name — ahead of a count the user cannot act on and a failure they
         // cannot retry.
-        if sawAuthRequired {
+        if parked {
             self = .needsSignIn
-        } else if sawFailure {
+        } else if failedThisPass {
             self = .sendFailed
-        } else if !drainedAnything {
-            self = .ready
-        } else if drainedPending > 0 {
-            self = .pending(count: drainedPending)
-        } else {
+        } else if outstanding > 0 {
+            self = .pending(count: outstanding)
+        } else if deliveredThisPass {
             self = .synced
+        } else {
+            self = .ready
+        }
+    }
+
+    /// Folds in the news that this capture lost its location, when there is room
+    /// for it.
+    ///
+    /// Two true things compete for one line. A state that needs the user always
+    /// wins, because a location explanation must never displace "that capture
+    /// couldn't be saved". A plain success does not simply yield, though: an
+    /// earlier version replaced ``saved`` outright, which worked for a note (the
+    /// emptied field is its own confirmation) and lost the only confirmation a
+    /// *photo* capture ever gets. So the two are combined rather than ranked.
+    public func resolving(locationJustDenied: Bool) -> CaptureStatus {
+        guard locationJustDenied else { return self }
+        switch self {
+        case .saved, .queued: return .savedWithoutLocation
+        // Anything else either needs the user, in which case it outranks this, or
+        // never captured anything for the location to be missing from.
+        default: return self
         }
     }
 
@@ -124,7 +158,8 @@ public enum CaptureStatus: Equatable, Sendable {
     /// emphasis, and keeps "will sync" from being styled like a problem.
     public var isFailure: Bool {
         switch self {
-        case .ready, .working, .saved, .queued, .pending, .synced, .locationOff:
+        case .ready, .working, .syncing, .saved, .queued, .pending, .synced, .locationOff,
+            .savedWithoutLocation:
             false
         case .needsSignIn, .sendFailed, .nothingToSave, .unreadableImage, .captureLost, .storageUnavailable,
             .notSignedIn:
@@ -140,7 +175,7 @@ public enum CaptureStatus: Equatable, Sendable {
     /// enqueued does not, or the user watches their words vanish into nothing.
     public var draftBecameDurable: Bool {
         switch self {
-        case .saved, .queued, .needsSignIn, .sendFailed: true
+        case .saved, .queued, .needsSignIn, .sendFailed, .savedWithoutLocation: true
         default: false
         }
     }
