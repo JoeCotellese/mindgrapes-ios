@@ -18,6 +18,7 @@ struct SettingsView: View {
     /// sign-in. The caller dismisses the sheet.
     let onSignOut: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var includeLocation = SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation ?? true
 
     private var serverURL: String {
         SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig?.baseURL.absoluteString ?? "Not connected"
@@ -33,8 +34,37 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                 }
                 Section {
+                    // Lives here rather than on the capture screen per SPEC 10.1:
+                    // it is a standing preference, and the capture screen is for
+                    // the one thing you came to do.
+                    Toggle("Include location", isOn: $includeLocation)
+                        .onChange(of: includeLocation) { _, on in
+                            SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation = on
+                            // The Watch cannot read this App Group, so the value has
+                            // to be pushed. Without this it reached the wrist only on
+                            // the next activation or foreground, and a user who turned
+                            // location on and then raised their wrist captured without
+                            // one.
+                            WatchSessionCoordinator.shared.pushSettings()
+                        }
+                } footer: {
+                    Text("Tags each capture with where you were, so you can ask about places later.")
+                }
+                Section {
                     Button("Sign out", role: .destructive, action: signOut)
                 }
+            }
+            .onAppear {
+                // Re-read rather than trust the @State initializer: a capture that
+                // hit a denied permission turns this off in SharedDefaults, and a
+                // value snapshotted at init would still show the toggle on.
+                //
+                // Only on a real difference. Assigning unconditionally fires the
+                // toggle's own onChange, which pushes to the watch — a spurious
+                // transfer on every Settings open, in service of a re-read that
+                // usually changes nothing.
+                let stored = SharedDefaults(appGroup: AppGroup.identifier)?.includeLocation ?? true
+                if stored != includeLocation { includeLocation = stored }
             }
             .navigationTitle("Settings")
             .toolbar {
