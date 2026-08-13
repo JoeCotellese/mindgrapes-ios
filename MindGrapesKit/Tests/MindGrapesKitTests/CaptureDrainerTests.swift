@@ -55,6 +55,24 @@ struct CaptureDrainerTests {
         try #require(NoteDraft(content: content))
     }
 
+    private var metadata: OAuthServerMetadata {
+        let base = URL(string: "https://brain.example")!
+        return OAuthServerMetadata(
+            issuer: "https://brain.example",
+            authorizationEndpoint: base.appending(path: "oauth/authorize"),
+            tokenEndpoint: base.appending(path: "oauth/token"),
+            registrationEndpoint: base.appending(path: "oauth/register")
+        )
+    }
+
+    /// A real ``AuthManager`` over an in-memory store, scripted through the
+    /// `AuthStubURLProtocol` channel — separate from the capture channel the
+    /// drainer's ``client()`` uses, so the token endpoint and the capture endpoint
+    /// are scripted independently.
+    private func authManager(store: TokenStore) -> AuthManager {
+        AuthManager(session: AuthStubURLProtocol.makeSession(), store: store, metadata: metadata)
+    }
+
     /// Spools a real derivative into the fixture's App Group and returns a draft
     /// naming it, so the drain reads bytes the same way production does.
     private func photo(into appGroup: AppGroupContainer, description: String = "A photo.") throws -> PhotoDraft {
@@ -166,6 +184,65 @@ struct CaptureDrainerTests {
         let result = try await drainer(queue: queue).drainOnce(now: now)
         #expect(result.first?.state == .succeeded)
         #expect(result.first?.experienceID == "exp-9")
+    }
+
+    /// Success Condition 7 (SPEC 12), end to end minus the UI tap: the server
+    /// revokes the client, the drain's forced refresh meets `invalid_grant`, the
+    /// queue parks rather than losing captures, the stored session is gone (the
+    /// invariant #48's re-auth routing depends on), and after fresh credentials
+    /// land, `resumeAfterAuth` + a second drain delivers the same captures.
+    ///
+    /// The one piece this cannot cover is the on-device tap that carries the user
+    /// from the parked capture screen to `ConnectView`; that stays a manual gate.
+    /// Everything the tap sits on top of is proven here.
+    @Test func revokedRefreshParksTheQueueThenReAuthDrainsTheSameCaptures() async throws {
+        defer {
+            AuthStubURLProtocol.reset()
+            CaptureDrainerStubURLProtocol.reset()
+        }
+
+        let fixture = try Fixture()
+        let queue = fixture.makeQueue()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+
+        // A store whose access token expires inside the 60 s refresh lead time, so
+        // the drain's token fetch is forced to refresh (SPEC 5.3).
+        let store = TokenStore(keychain: InMemoryKeychain(), accessGroup: "test.group")
+        try store.setClientID("client-123")
+        try store.setTokens(TokenSet(accessToken: "at-old", refreshToken: "rt-old", accessTokenExpiresAt: now.addingTimeInterval(10)))
+        let auth = authManager(store: store)
+
+        let first = try await queue.enqueue(note: note("one"), now: now)
+        let second = try await queue.enqueue(note: note("two"), now: now)
+
+        // The server has revoked the client: the forced refresh returns invalid_grant.
+        AuthStubURLProtocol.install(status: 400, text: #"{"error":"invalid_grant"}"#)
+        let parked = try await CaptureDrainer(queue: queue, client: client()) { try await auth.validAccessToken(asOf: now) }
+            .drainOnce(now: now)
+
+        // Captures survive, parked for re-auth — not failed, not dropped.
+        #expect(Set(parked.map(\.state)) == [.authRequired])
+        #expect(try await queue.snapshot(id: first.id)?.state == .authRequired)
+        #expect(try await queue.snapshot(id: second.id)?.state == .authRequired)
+        // The invariant the re-auth UI routing rests on (#48): a parked queue means
+        // no usable session, so ConnectView opens on the sign-in step, not location.
+        #expect(try store.hasUsableAccessToken() == false)
+        // Registration survives, so re-auth reuses the client_id (SPEC 5.3).
+        #expect(try store.clientID() == "client-123")
+
+        // Re-auth: fresh credentials land (a successful sign-in), the queue revives,
+        // and the capture endpoint now accepts.
+        AuthStubURLProtocol.reset()
+        try store.setTokens(TokenSet(accessToken: "at-new", refreshToken: "rt-new", accessTokenExpiresAt: now.addingTimeInterval(600)))
+        try await queue.resumeAfterAuth(now: now)
+        CaptureDrainerStubURLProtocol.install(status: 200, text: #"{"experience_id":"exp-ok"}"#)
+
+        let drained = try await CaptureDrainer(queue: queue, client: client()) { try await auth.validAccessToken(asOf: now) }
+            .drainOnce(now: now)
+
+        #expect(Set(drained.map(\.state)) == [.succeeded])
+        #expect(try await queue.snapshot(id: first.id)?.state == .succeeded)
+        #expect(try await queue.snapshot(id: second.id)?.state == .succeeded)
     }
 
     // MARK: - Photos

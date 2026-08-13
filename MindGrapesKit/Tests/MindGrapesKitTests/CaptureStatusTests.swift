@@ -72,6 +72,32 @@ struct CaptureStatusTests {
         #expect(CaptureStatus.notSignedIn.isFailure)
     }
 
+    @Test("Only the auth states offer a sign-in action, and every other state hides it")
+    func offersSignInForAuthStatesOnly() {
+        // The capture screen turns this into a tappable route to re-auth. Both auth
+        // states are resolved by signing in — one has a capture parked
+        // (needsSignIn), the other has no session at all (notSignedIn) — so both
+        // earn the action. Every other state, success or failure, does not: a
+        // sign-in button under "that photo couldn't be read" would route nowhere
+        // useful.
+        #expect(CaptureStatus.needsSignIn.offersSignIn)
+        #expect(CaptureStatus.notSignedIn.offersSignIn)
+        #expect(CaptureStatus.ready.offersSignIn == false)
+        #expect(CaptureStatus.working.offersSignIn == false)
+        #expect(CaptureStatus.syncing.offersSignIn == false)
+        #expect(CaptureStatus.saved(experienceID: "x").offersSignIn == false)
+        #expect(CaptureStatus.queued.offersSignIn == false)
+        #expect(CaptureStatus.pending(count: 2).offersSignIn == false)
+        #expect(CaptureStatus.synced.offersSignIn == false)
+        #expect(CaptureStatus.sendFailed.offersSignIn == false)
+        #expect(CaptureStatus.nothingToSave.offersSignIn == false)
+        #expect(CaptureStatus.unreadableImage.offersSignIn == false)
+        #expect(CaptureStatus.captureLost.offersSignIn == false)
+        #expect(CaptureStatus.storageUnavailable.offersSignIn == false)
+        #expect(CaptureStatus.locationOff.offersSignIn == false)
+        #expect(CaptureStatus.savedWithoutLocation.offersSignIn == false)
+    }
+
     @Test("Signed-out is not the same state as a capture parked for re-auth")
     func signedOutIsNotParked() {
         // Both ask the user to sign in, but only one of them has a capture
