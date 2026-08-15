@@ -1,6 +1,9 @@
 // ABOUTME: The capture screen: a focused compose field over one docked bar of capture actions.
 // ABOUTME: Every action runs through CaptureIntentRunner, the same path Siri and the Shortcuts take.
 
+#if canImport(JournalingSuggestions)
+import JournalingSuggestions
+#endif
 import MindGrapesKit
 import OSLog
 import PhotosUI
@@ -42,10 +45,6 @@ struct CaptureView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var showCamera = false
     @State private var showSettings = false
-    /// Drives the Journaling Suggestions picker. Wired to present in Phase 4;
-    /// the toolbar entry point that flips it lands in Phase 1 so the capability
-    /// and its availability gate can be verified on device first.
-    @State private var showJournalingPicker = false
     /// How many pieces of work hold the interlock, not whether any does.
     ///
     /// A `Bool` was wrong: a foreground drain and a photo load overlap (the
@@ -80,22 +79,28 @@ struct CaptureView: View {
         .navigationTitle("Capture")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            // Hidden where the picker cannot run (Simulator, unentitled build),
-            // so the user never taps a control that opens nothing. Present on a
-            // real entitled device; Phase 4 wires the tap to the picker.
+            // The JournalingSuggestions module ships only in the device SDK, not
+            // the Simulator's, so the whole entry point compiles out on Simulator
+            // (where the picker cannot run anyway) and is gated at runtime on a
+            // real device by the availability seam. The picker is self-presenting:
+            // it draws this label as its button and opens Apple's sheet on tap.
+            #if canImport(JournalingSuggestions)
             if JournalingSuggestionsAvailability.isSupported {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showJournalingPicker = true
-                    } label: {
+                    JournalingSuggestionsPicker {
                         // text.badge.plus, not a calendar glyph: these commit as
                         // durable dated text breadcrumbs, and calendar.* reads as
                         // "add a calendar event", the wrong mental model (#52).
                         Label("Add from Journaling Suggestions", systemImage: "text.badge.plus")
+                    } onCompletion: { suggestion in
+                        if let moment = await journalingMoment(from: SendableSuggestion(suggestion: suggestion)) {
+                            await addJournalingMoments([moment])
+                        }
                     }
                     .accessibilityHint("Opens Apple's picker to add moments to your memory")
                 }
             }
+            #endif
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showSettings = true
@@ -313,6 +318,31 @@ struct CaptureView: View {
             log.info("capturePhoto outcome: \(String(describing: outcome), privacy: .public)")
             status = CaptureStatus(outcome: outcome).resolving(locationJustDenied: locationJustDenied)
         }
+    }
+
+    /// Commits the moments a Journaling Suggestions pull selected, then drains so
+    /// they reach the server (#52).
+    ///
+    /// The heavy lifting is the Kit's ``JournalingCommit``: it enqueues each usable
+    /// moment under its stable id, skipping text-less ones and deduping re-pulls,
+    /// and returns how many were new. The screen only reports that count and drives
+    /// the same drain every capture uses, so a pull made offline or signed out
+    /// parks and re-auths exactly like a typed note. The auto-commit result is
+    /// announced to VoiceOver by the status line's own `onChange`.
+    private func addJournalingMoments(_ moments: [JournalingMoment]) async {
+        guard let queue, !busy else { return }
+        activeWork += 1
+        do {
+            let added = try await JournalingCommit.commit(moments, to: queue)
+            status = .momentsAdded(count: added)
+        } catch {
+            log.error("journaling commit failed: \(String(describing: error), privacy: .public)")
+            status = .captureLost
+        }
+        activeWork -= 1
+        // Deliver now. The drain reports sending → sent over the confirmation; the
+        // durable records survive to the next foreground even if it cannot.
+        await drain()
     }
 
     /// The location fix to attach, and whether this call is what turned the
