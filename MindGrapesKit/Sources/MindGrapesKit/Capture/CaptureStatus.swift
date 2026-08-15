@@ -62,6 +62,12 @@ public enum CaptureStatus: Equatable, Sendable {
     /// names a capture that does not exist.
     case notSignedIn
 
+    /// A Journaling Suggestions pull committed `count` moments to memory. A
+    /// success, reported on the shared status line like any other capture (#52).
+    /// `count` is how many were newly enqueued; a pull that added nothing new
+    /// (all already saved) reports zero rather than a false "added".
+    case momentsAdded(count: Int)
+
     /// The location toggle was on but permission is denied, so this capture
     /// carried no location.
     case locationOff
@@ -158,7 +164,7 @@ public enum CaptureStatus: Equatable, Sendable {
     /// emphasis, and keeps "will sync" from being styled like a problem.
     public var isFailure: Bool {
         switch self {
-        case .ready, .working, .syncing, .saved, .queued, .pending, .synced, .locationOff,
+        case .ready, .working, .syncing, .saved, .queued, .pending, .synced, .momentsAdded, .locationOff,
             .savedWithoutLocation:
             false
         case .needsSignIn, .sendFailed, .nothingToSave, .unreadableImage, .captureLost, .storageUnavailable,

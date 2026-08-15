@@ -67,10 +67,11 @@ public struct JournalingMoment: Sendable, Equatable {
 
     /// The template text for this moment, or `nil` when there is nothing to say.
     ///
-    /// Phase 3 derives the dedup key from a canonical form of these fields, not
-    /// from this display string: the group list keeps Apple's order for reading,
-    /// so hashing the rendered text would make a same-outing re-pull in a
-    /// different order look like a new memory (#52's no-duplicate rule).
+    /// ``idempotencyID`` keys off this text for a location and an event, so two
+    /// renderings that read identically also dedupe. Only a group is rebuilt for
+    /// the key (its places sorted): a group is the one kind whose reading order is
+    /// preserved here for the note, and that order must not leak into the id, or a
+    /// same-outing re-pull in another order would look like a new memory (#52).
     private var composedText: String? {
         switch content {
         case let .location(place, city):
@@ -94,6 +95,12 @@ public struct JournalingMoment: Sendable, Equatable {
                 // a breadcrumb worth keeping: the venue and the date are both
                 // usable, so fall back to the venue rather than dropping a moment
                 // the user selected. Only a poster with neither is skipped.
+                //
+                // This reads exactly like a location breadcrumb, and because its
+                // kind still differs it will not dedupe against a location
+                // suggestion for the same venue in the same minute — two identical
+                // lines. Accepted: it needs a titleless poster and a separate
+                // location suggestion for one venue at one time, which is rare.
                 guard let place else { return nil }
                 return "Visited \(place)"
             }

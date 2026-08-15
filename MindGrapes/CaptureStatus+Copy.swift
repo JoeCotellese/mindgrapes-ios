@@ -18,6 +18,11 @@ extension CaptureStatus {
         case .pending(let count) where count > 1: "\(count) captures still syncing."
         case .pending: "1 capture still syncing."
         case .synced: "All captures synced"
+        // A journaling pull that added nothing new says so plainly rather than a
+        // false "Added 0"; the singular and plural read naturally.
+        case .momentsAdded(0): "Those are already in your memory."
+        case .momentsAdded(1): "Added 1 moment to memory."
+        case .momentsAdded(let count): "Added \(count) moments to memory."
         case .needsSignIn: "Saved. Sign in again to send it."
         case .sendFailed: "Saved here, but the server refused it."
         case .nothingToSave: "Nothing to save yet."
@@ -38,7 +43,7 @@ extension CaptureStatus {
     var symbolName: String? {
         switch self {
         case .ready, .working, .syncing: nil
-        case .saved, .synced: "checkmark.circle.fill"
+        case .saved, .synced, .momentsAdded: "checkmark.circle.fill"
         case .queued, .pending: "arrow.triangle.2.circlepath"
         case .needsSignIn, .notSignedIn: "person.crop.circle.badge.exclamationmark"
         case .locationOff, .savedWithoutLocation: "location.slash"
@@ -51,7 +56,7 @@ extension CaptureStatus {
     var tint: Color {
         if isFailure { return .red }
         switch self {
-        case .saved, .synced: return .green
+        case .saved, .synced, .momentsAdded: return .green
         case .queued, .pending: return .orange
         default: return .secondary
         }

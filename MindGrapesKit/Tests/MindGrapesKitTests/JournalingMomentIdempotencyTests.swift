@@ -163,6 +163,29 @@ struct JournalingMomentIdempotencyTests {
         #expect(location.idempotencyID != group.idempotencyID)
     }
 
+    /// A titleless event poster falls back to "Visited {venue}" — the same line a
+    /// location produces. They intentionally do NOT dedupe (different kinds); this
+    /// pins that accepted behavior so a future change to it is a deliberate one.
+    @Test("A venue-only event and a location of that venue stay distinct")
+    func eventVenueFallbackIsDistinctFromLocation() {
+        let event = JournalingMoment(
+            content: .eventPoster(title: "  ", place: "Villa San Michele"),
+            date: visitDate, coordinate: nil
+        )
+        let location = JournalingMoment(
+            content: .location(place: "Villa San Michele", city: nil),
+            date: visitDate, coordinate: nil
+        )
+
+        #expect(event.idempotencyID != location.idempotencyID)
+        // ...but the fallback id is itself stable across re-pulls.
+        let sameEvent = JournalingMoment(
+            content: .eventPoster(title: "", place: "villa san michele"),
+            date: visitDate, coordinate: nil
+        )
+        #expect(event.idempotencyID == sameEvent.idempotencyID)
+    }
+
     // MARK: - Date
 
     @Test("A visit on another day derives a different id")

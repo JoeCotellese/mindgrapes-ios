@@ -224,4 +224,14 @@ struct CaptureStatusTests {
                 == .needsSignIn
         )
     }
+
+    // MARK: - Journaling moments (#52)
+
+    @Test("A journaling pull is a success, not a failure, and asks for no sign-in")
+    func momentsAddedIsASuccess() {
+        #expect(CaptureStatus.momentsAdded(count: 3).isFailure == false)
+        #expect(CaptureStatus.momentsAdded(count: 3).offersSignIn == false)
+        // Zero-added (all already saved) is still not a failure.
+        #expect(CaptureStatus.momentsAdded(count: 0).isFailure == false)
+    }
 }
