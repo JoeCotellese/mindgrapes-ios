@@ -1,6 +1,9 @@
 // ABOUTME: The capture screen: a focused compose field over one docked bar of capture actions.
 // ABOUTME: Every action runs through CaptureIntentRunner, the same path Siri and the Shortcuts take.
 
+#if canImport(JournalingSuggestions)
+import JournalingSuggestions
+#endif
 import MindGrapesKit
 import OSLog
 import PhotosUI
@@ -40,6 +43,13 @@ struct CaptureView: View {
     @State private var drainer: CaptureDrainer?
     @State private var queue: CaptureQueue?
     @State private var photoItem: PhotosPickerItem?
+    /// A moment picked from Journaling Suggestions, staged into the compose field
+    /// and waiting on the user's Save. It carries the visit date and coordinate so
+    /// ``save`` can stamp the note with when and where the moment happened rather
+    /// than now and here — the whole point of #52 — even after the user edits the
+    /// prefilled wording. `nil` whenever the field is a plain typed capture. Only
+    /// set on a device with the JournalingSuggestions SDK; inert everywhere else.
+    @State private var pendingVisit: JournalingMoment?
     @State private var showCamera = false
     @State private var showSettings = false
     /// How many pieces of work hold the interlock, not whether any does.
@@ -76,6 +86,40 @@ struct CaptureView: View {
         .navigationTitle("Capture")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // The JournalingSuggestions module ships only in the device SDK, not
+            // the Simulator's, so the whole entry point compiles out on Simulator
+            // (where the picker cannot run anyway) and is gated at runtime on a
+            // real device by the availability seam. The picker is self-presenting:
+            // it draws this label as its button and opens Apple's sheet on tap.
+            #if canImport(JournalingSuggestions)
+            if JournalingSuggestionsAvailability.isSupported {
+                ToolbarItem(placement: .topBarTrailing) {
+                    JournalingSuggestionsPicker {
+                        // text.badge.plus, not a calendar glyph: these commit as
+                        // durable dated text breadcrumbs, and calendar.* reads as
+                        // "add a calendar event", the wrong mental model (#52).
+                        Label("Add from Journaling Suggestions", systemImage: "text.badge.plus")
+                    } onCompletion: { suggestion in
+                        // The picker hands the suggestion back on the main actor,
+                        // but JournalingSuggestion is not Sendable and the adapter
+                        // reads it off-actor. The picker calls this once and never
+                        // touches the suggestion again, so the single hop is safe;
+                        // nonisolated(unsafe) states that at the one point the
+                        // compiler cannot prove it.
+                        nonisolated(unsafe) let picked = suggestion
+                        if let moment = await journalingMoment(from: picked) {
+                            prefill(with: moment)
+                        } else {
+                            // A picked suggestion we breadcrumb nothing from (no
+                            // date, or no place/title) still gets an answer rather
+                            // than a silent no-op.
+                            status = .suggestionNotUsable
+                        }
+                    }
+                    .accessibilityHint("Opens Apple's picker to add moments to your memory")
+                }
+            }
+            #endif
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showSettings = true
@@ -111,6 +155,11 @@ struct CaptureView: View {
         .onChange(of: scenePhase) { _, phase in
             // Foregrounding drains anything that backed off while away.
             if phase == .active, drainer != nil { Task { await drain() } }
+        }
+        .onChange(of: text) { _, new in
+            // Emptying the field drops any staged visit: whatever is typed next is a
+            // fresh capture at today and here, not that suggestion's date and place.
+            if new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { pendingVisit = nil }
         }
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
@@ -251,6 +300,10 @@ struct CaptureView: View {
     private func save() {
         guard NoteDraft(content: text) != nil, let runner else { return }
         let content = text
+        // A moment staged from Journaling Suggestions carries its own when and
+        // where. Captured before the await so a foreground drain cannot clear it
+        // mid-send; consumed only once this save reaches durable storage.
+        let staged = pendingVisit
         activeWork += 1
         status = .working
         Task {
@@ -261,18 +314,33 @@ struct CaptureView: View {
                 // wrong app. Re-arm it.
                 composing = true
             }
-            let (fix, locationJustDenied) = await locationFix()
-            let outcome = CaptureStatus(outcome: await runner.captureNote(content, location: fix))
+            let outcome: CaptureStatus
+            if let staged {
+                // Stamp the visit date and the suggestion's coordinate, not now and
+                // the current fix — "when did we see the David" has to answer with
+                // the day of the visit (#52). This holds even though the user may
+                // have reworded the prefilled text; the date and place are the
+                // moment's, the words are theirs. No location toggle applies: the
+                // user is not here now, so there is nothing to turn off.
+                let fix = staged.coordinate.map { LocationFix(coordinate: $0, placeLabel: nil) }
+                outcome = CaptureStatus(outcome: await runner.captureNote(content, location: fix, now: staged.date))
+            } else {
+                let (fix, locationJustDenied) = await locationFix()
+                let raw = CaptureStatus(outcome: await runner.captureNote(content, location: fix))
+                outcome = raw.resolving(locationJustDenied: locationJustDenied)
+            }
             // Take back only what reached durable storage. The field stays editable
             // during the send and the screen re-arms focus to invite exactly that,
             // so `text = ""` would delete whatever was typed while waiting — and
             // leaving the sent words in place would get them captured twice on the
             // next tap. Dropping the prefix does neither. A mid-string edit falls
             // through and keeps everything, which is the safe direction.
-            if outcome.draftBecameDurable, text.hasPrefix(content) {
-                text.removeFirst(content.count)
+            if outcome.draftBecameDurable {
+                if text.hasPrefix(content) { text.removeFirst(content.count) }
+                // The staged visit is spent; the next note is a plain capture again.
+                pendingVisit = nil
             }
-            status = outcome.resolving(locationJustDenied: locationJustDenied)
+            status = outcome
         }
     }
 
@@ -294,6 +362,39 @@ struct CaptureView: View {
             status = CaptureStatus(outcome: outcome).resolving(locationJustDenied: locationJustDenied)
         }
     }
+
+    #if canImport(JournalingSuggestions)
+    /// Drops a picked suggestion's breadcrumb text into the compose field for the
+    /// user to review and edit before saving, rather than committing it silently
+    /// (#52). The visit date and coordinate ride along in ``pendingVisit`` so
+    /// ``save`` can stamp them even after the wording is edited.
+    ///
+    /// Only fills an empty field: the field is focused-empty at launch, so this is
+    /// the usual case, and overwriting a thought the user is mid-way through typing
+    /// would lose it. A pick onto a non-empty field is refused with a nudge instead.
+    /// A suggestion that carries nothing we breadcrumb reports that, so a tap is
+    /// never a silent no-op.
+    ///
+    /// This replaces the earlier auto-commit path. The Kit's ``JournalingCommit``
+    /// and the ``CaptureStatus/momentsAdded(count:)`` copy remain for Phase 5, where
+    /// a system notification commits a moment with no compose field in the loop.
+    private func prefill(with moment: JournalingMoment) {
+        guard let draft = moment.noteDraft() else {
+            // Mapped, but its text was blank — nothing to file under.
+            log.error("prefill: moment.noteDraft() was nil, nothing to prefill")
+            status = .suggestionNotUsable
+            return
+        }
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            status = .suggestionNeedsEmptyField
+            return
+        }
+        text = draft.content
+        pendingVisit = moment
+        status = .ready
+        composing = true
+    }
+    #endif
 
     /// The location fix to attach, and whether this call is what turned the
     /// setting off.

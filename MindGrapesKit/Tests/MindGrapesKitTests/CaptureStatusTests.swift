@@ -224,4 +224,33 @@ struct CaptureStatusTests {
                 == .needsSignIn
         )
     }
+
+    // MARK: - Journaling moments (#52)
+
+    @Test("A journaling pull is a success, not a failure, and asks for no sign-in")
+    func momentsAddedIsASuccess() {
+        #expect(CaptureStatus.momentsAdded(count: 3).isFailure == false)
+        #expect(CaptureStatus.momentsAdded(count: 3).offersSignIn == false)
+        // Zero-added (all already saved) is still not a failure.
+        #expect(CaptureStatus.momentsAdded(count: 0).isFailure == false)
+    }
+
+    @Test("A suggestion picked onto a full field nudges, and is not a failure")
+    func suggestionNeedsEmptyFieldIsANudge() {
+        // The pick prefills the field and lost nothing, so it must not be styled as
+        // an error or offer a sign-in the way a real problem would.
+        #expect(CaptureStatus.suggestionNeedsEmptyField.isFailure == false)
+        #expect(CaptureStatus.suggestionNeedsEmptyField.offersSignIn == false)
+        // Nothing reached durable storage, so the field must not be cleared under it.
+        #expect(CaptureStatus.suggestionNeedsEmptyField.draftBecameDurable == false)
+    }
+
+    @Test("An unusable picked suggestion is a plain outcome, not a failure or a save")
+    func suggestionNotUsableIsNotAFailure() {
+        // The user picked something we could not breadcrumb; it is informational,
+        // not an error to fix and not a durable capture.
+        #expect(CaptureStatus.suggestionNotUsable.isFailure == false)
+        #expect(CaptureStatus.suggestionNotUsable.offersSignIn == false)
+        #expect(CaptureStatus.suggestionNotUsable.draftBecameDurable == false)
+    }
 }
