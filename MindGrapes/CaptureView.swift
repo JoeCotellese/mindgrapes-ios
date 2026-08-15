@@ -42,6 +42,10 @@ struct CaptureView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var showCamera = false
     @State private var showSettings = false
+    /// Drives the Journaling Suggestions picker. Wired to present in Phase 4;
+    /// the toolbar entry point that flips it lands in Phase 1 so the capability
+    /// and its availability gate can be verified on device first.
+    @State private var showJournalingPicker = false
     /// How many pieces of work hold the interlock, not whether any does.
     ///
     /// A `Bool` was wrong: a foreground drain and a photo load overlap (the
@@ -76,6 +80,22 @@ struct CaptureView: View {
         .navigationTitle("Capture")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Hidden where the picker cannot run (Simulator, unentitled build),
+            // so the user never taps a control that opens nothing. Present on a
+            // real entitled device; Phase 4 wires the tap to the picker.
+            if JournalingSuggestionsAvailability.isSupported {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showJournalingPicker = true
+                    } label: {
+                        // text.badge.plus, not a calendar glyph: these commit as
+                        // durable dated text breadcrumbs, and calendar.* reads as
+                        // "add a calendar event", the wrong mental model (#52).
+                        Label("Add from Journaling Suggestions", systemImage: "text.badge.plus")
+                    }
+                    .accessibilityHint("Opens Apple's picker to add moments to your memory")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showSettings = true

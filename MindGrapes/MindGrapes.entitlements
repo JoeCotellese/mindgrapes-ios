@@ -10,5 +10,7 @@
 	<array>
 		<string>$(AppIdentifierPrefix)net.cotellese.mindgrapes.shared</string>
 	</array>
+	<key>com.apple.developer.journal.allow</key>
+	<true/>
 </dict>
 </plist>
