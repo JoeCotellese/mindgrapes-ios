@@ -1,6 +1,7 @@
 // ABOUTME: One selected Journaling Suggestion, reduced to the text and metadata a note needs.
 // ABOUTME: The app fills it from an un-simulatable JournalingSuggestion; all mapping logic lives here.
 
+import CryptoKit
 import Foundation
 
 /// A moment the user picked from Apple's Journaling Suggestions, on its way to
@@ -119,4 +120,89 @@ public struct JournalingMoment: Sendable, Equatable {
         var seen = Set<String>()
         return places.filter { seen.insert($0.lowercased()).inserted }
     }
+
+    // MARK: - Idempotency
+
+    /// The id to enqueue this moment under, stable across re-pulls of the same
+    /// suggestion so ``CaptureQueue/enqueue(note:id:now:)`` dedupes it rather than
+    /// writing a second memory (#52).
+    ///
+    /// Derived, not random: Apple's picker exposes no stable suggestion id outside
+    /// the notification flow (a Phase 0 device spike may find one and supersede
+    /// this). The id is a name-based UUID over a canonical signature — the kind,
+    /// the moment's canonical text, and the visit bucketed to the minute.
+    ///
+    /// Two things are deliberately absent. The **coordinate**: it is redundant with
+    /// the place text and is the largest source of between-pull drift (a place's
+    /// fix wanders by metres), so including it would split one visit into two
+    /// records far more often than it would ever separate two real visits. And
+    /// **sub-minute precision**, for the same reason — the note's own `occurred_at`
+    /// keeps the exact instant; the id only needs enough to tell visits apart.
+    ///
+    /// The text reuses ``composedText`` (a group is rebuilt with its places sorted,
+    /// since only the group has an order), so the place-carries-city and place==city
+    /// variants Apple alternates between key identically, and it is folded to NFC +
+    /// lowercase so an accented name that arrives decomposed one pull and
+    /// precomposed the next still matches. Because it keys off the rendered text, a
+    /// change to the templates above changes the id: bump the `v1` tag deliberately
+    /// if that happens, the way a schema migration is deliberate.
+    public var idempotencyID: UUID {
+        let signature = [
+            "mindgrapes/journaling/v1",
+            kindTag,
+            Self.foldForKey(canonicalKeyText),
+            String(Int((date.timeIntervalSince1970 / 60).rounded())),
+        ].joined(separator: "\u{1F}")
+        return uuidFromNameHash(SHA256.hash(data: Data(signature.utf8)))
+    }
+
+    private var kindTag: String {
+        switch content {
+        case .location: return "location"
+        case .locationGroup: return "group"
+        case .eventPoster: return "event"
+        }
+    }
+
+    /// The moment's identity text. Location and event reuse ``composedText`` so the
+    /// key sees exactly the collapse the note shows; a group is rebuilt with its
+    /// places sorted (not the display's Apple order) so the id is order-independent.
+    private var canonicalKeyText: String {
+        switch content {
+        case .location, .eventPoster:
+            return composedText ?? ""
+        case let .locationGroup(city, places):
+            let sorted = Set(places.compactMap(\.nonBlank).map(Self.foldForKey))
+                .filter { !$0.isEmpty }
+                .sorted()
+            guard !sorted.isEmpty else { return "" }
+            let list = sorted.joined(separator: ", ")
+            guard let city = city?.nonBlank else { return "Visited \(list)" }
+            return "Visited \(Self.foldForKey(city)): \(list)"
+        }
+    }
+
+    /// A stable byte form for hashing: drop C0 control characters (so nothing can
+    /// forge a field separator), normalize to NFC, and lowercase — all
+    /// locale-independent, so the same name always yields the same bytes.
+    private static func foldForKey(_ value: String) -> String {
+        let withoutControls = String(value.unicodeScalars.filter { $0.value >= 0x20 })
+        return withoutControls.precomposedStringWithCanonicalMapping.lowercased()
+    }
+}
+
+/// A deterministic UUID from a hash: the first 16 bytes, stamped as RFC 9562
+/// version 8 (a custom, implementation-defined layout — honest here because the
+/// bytes are SHA-256, not the SHA-1 a version-5 UUID names) with the RFC 4122
+/// variant. The same hash always yields the same UUID, which is the whole point.
+private func uuidFromNameHash(_ digest: SHA256.Digest) -> UUID {
+    var bytes = Array(digest.prefix(16))
+    bytes[6] = (bytes[6] & 0x0F) | 0x80
+    bytes[8] = (bytes[8] & 0x3F) | 0x80
+    return UUID(uuid: (
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11],
+        bytes[12], bytes[13], bytes[14], bytes[15]
+    ))
 }
