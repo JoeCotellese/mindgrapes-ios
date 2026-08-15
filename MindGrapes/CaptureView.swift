@@ -93,7 +93,14 @@ struct CaptureView: View {
                         // "add a calendar event", the wrong mental model (#52).
                         Label("Add from Journaling Suggestions", systemImage: "text.badge.plus")
                     } onCompletion: { suggestion in
-                        if let moment = await journalingMoment(from: SendableSuggestion(suggestion: suggestion)) {
+                        // The picker hands the suggestion back on the main actor,
+                        // but JournalingSuggestion is not Sendable and the adapter
+                        // reads it off-actor. The picker calls this once and never
+                        // touches the suggestion again, so the single hop is safe;
+                        // nonisolated(unsafe) states that at the one point the
+                        // compiler cannot prove it.
+                        nonisolated(unsafe) let picked = suggestion
+                        if let moment = await journalingMoment(from: picked) {
                             await addJournalingMoments([moment])
                         }
                     }
