@@ -18,7 +18,16 @@ struct RootView: View {
         Group {
             if signedIn {
                 NavigationStack {
-                    CaptureView(onSignOut: { signedIn = false })
+                    // Both callbacks flip to ConnectView. Sign-out clears tokens
+                    // and the queue first (SettingsView); the parked re-auth tap
+                    // clears nothing — the tokens are already gone (a dead refresh
+                    // deleted them) and ConnectView revives the parked queue on
+                    // success. Same destination, reached on a tap instead of a
+                    // background/foreground round trip (#48).
+                    CaptureView(
+                        onSignOut: { signedIn = false },
+                        onNeedsSignIn: { signedIn = false }
+                    )
                 }
             } else {
                 NavigationStack {

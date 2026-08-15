@@ -29,6 +29,10 @@ private let log = Logger(subsystem: "net.cotellese.mindgrapes", category: "captu
 struct CaptureView: View {
     /// Called after the user signs out, so the root can return to sign-in.
     var onSignOut: () -> Void = {}
+    /// Called when the user taps the sign-in action on a parked capture, so the
+    /// root can show `ConnectView` without waiting for a background/foreground to
+    /// re-gate. `ConnectView` revives the parked queue on success (#48).
+    var onNeedsSignIn: () -> Void = {}
 
     @State private var text = ""
     @State private var status = CaptureStatus.ready
@@ -175,23 +179,45 @@ struct CaptureView: View {
     /// message arrives.
     private var statusLine: some View {
         HStack(spacing: 6) {
-            if status.isBusy {
-                ProgressView().controlSize(.small)
-            } else if let symbol = status.symbolName {
-                Image(systemName: symbol)
+            // The message and its icon read as one VoiceOver element; the sign-in
+            // action must stay a separate, tappable element, so the combine is
+            // scoped to this inner group rather than the whole line.
+            HStack(spacing: 6) {
+                if status.isBusy {
+                    ProgressView().controlSize(.small)
+                } else if let symbol = status.symbolName {
+                    Image(systemName: symbol)
+                }
+                Text(status.message)
             }
-            Text(status.message)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(status.message)
+            // At rest the message is empty, and without this VoiceOver still stops
+            // on a focusable element that says nothing.
+            .accessibilityHidden(status == .ready)
+
+            // The one interactive escape from a parked or signed-out capture
+            // screen (#48). Tinted rather than inheriting the line's red so it
+            // reads as an action, not more of the warning. The 44pt hit frame and
+            // contentShape give the HIG-minimum tap target the caption glyph alone
+            // would not; it lifts the status row's height only in the auth states.
+            if status.offersSignIn {
+                Button(action: onNeedsSignIn) {
+                    Text("Sign in")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.tint)
+            }
         }
         .font(.caption)
         .foregroundStyle(status.tint)
         .frame(minHeight: 18)
         .frame(maxWidth: .infinity)
         .padding(.top, 8)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(status.message)
-        // At rest the message is empty, and without this VoiceOver still stops on
-        // a focusable element that says nothing.
-        .accessibilityHidden(status == .ready)
         .onChange(of: status) { _, new in
             // A sighted user sees the line change. Nothing announced it otherwise,
             // so a VoiceOver user tapped Save and got no confirmation at all.

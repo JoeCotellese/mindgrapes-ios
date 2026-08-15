@@ -24,6 +24,14 @@ struct SettingsView: View {
         SharedDefaults(appGroup: AppGroup.identifier)?.serverConfig?.baseURL.absoluteString ?? "Not connected"
     }
 
+    /// Whether the install currently holds a usable session (SPEC 10.1). Reads the
+    /// stored token, not a live probe: reachability is `ConnectView`'s job at
+    /// onboarding, and a second `/healthz` here is a debugging affordance nobody
+    /// has asked for. `accessGroup: nil` matches the rest of the app (-34018).
+    private var isConnected: Bool {
+        (try? TokenStore(accessGroup: nil).hasUsableAccessToken()) ?? false
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -32,6 +40,20 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                    // "Signed in / Signed out" rather than "Connected": the row
+                    // above already says "Not connected" when no server is stored,
+                    // and that means something different (no server vs no session).
+                    // Distinct words keep the two rows from reading as a
+                    // contradiction when a server is stored but the session is gone.
+                    LabeledContent("Status") {
+                        Label(
+                            isConnected ? "Signed in" : "Signed out",
+                            systemImage: isConnected ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
+                        )
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(isConnected ? .green : .secondary)
+                    }
+                    .font(.footnote)
                 }
                 Section {
                     // Lives here rather than on the capture screen per SPEC 10.1:

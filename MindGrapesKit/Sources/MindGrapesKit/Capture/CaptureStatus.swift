@@ -167,6 +167,21 @@ public enum CaptureStatus: Equatable, Sendable {
         }
     }
 
+    /// Whether the screen should offer a tappable sign-in action for this state.
+    ///
+    /// True for exactly the two states a sign-in resolves: ``needsSignIn`` (a real
+    /// capture parked on a dead refresh) and ``notSignedIn`` (no session at all).
+    /// Both otherwise strand the user — the parked one until a background/foreground
+    /// re-gates the root (#48), the signed-out one on a screen that cannot capture —
+    /// so both get the same escape hatch. Every other state, success or failure,
+    /// hides it: signing in does nothing for a photo that would not decode.
+    public var offersSignIn: Bool {
+        switch self {
+        case .needsSignIn, .notSignedIn: true
+        default: false
+        }
+    }
+
     /// Whether the capture reached durable storage, and so whether the compose
     /// field may be cleared.
     ///

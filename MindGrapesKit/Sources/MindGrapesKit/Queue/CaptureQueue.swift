@@ -282,6 +282,13 @@ public actor CaptureQueue {
     /// Parks every record that could still send (`pending` or `inFlight`) in
     /// `authRequired` when a refresh returns `invalid_grant`. Parked records are
     /// not retried and not dropped; ``resumeAfterAuth(now:)`` revives them.
+    ///
+    /// Invariant the re-auth UI depends on: the only caller reaches here through
+    /// `AuthError.authRequired`, which `AuthManager.refresh()` throws only after
+    /// deleting the stored tokens. So a parked queue always implies no usable
+    /// session. `RootView`/`ConnectView` (#48) rely on that to route the "Sign in"
+    /// tap to the sign-in step rather than the location step. A future caller that
+    /// parks with credentials still present would silently break that routing.
     public func parkForAuth() throws {
         let pendingRaw = CaptureState.pending.rawValue
         let inFlightRaw = CaptureState.inFlight.rawValue
