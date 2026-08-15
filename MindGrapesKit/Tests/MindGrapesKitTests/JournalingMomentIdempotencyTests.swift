@@ -57,6 +57,24 @@ struct JournalingMomentIdempotencyTests {
         #expect(plain.idempotencyID == repeated.idempotencyID)
     }
 
+    /// The display collapses a place that only repeats the city (see
+    /// `JournalingMomentTests`); the id must collapse it the same way, or a pull
+    /// that lists the city among the places and one that does not would split one
+    /// outing into two memories.
+    @Test("A group place that is the city does not change the id")
+    func groupCityAsPlaceInvariant() {
+        let listed = JournalingMoment(
+            content: .locationGroup(city: "Firenze", places: ["Firenze", "Duomo", "Uffizi"]),
+            date: visitDate, coordinate: nil
+        )
+        let notListed = JournalingMoment(
+            content: .locationGroup(city: "Firenze", places: ["Duomo", "Uffizi"]),
+            date: visitDate, coordinate: nil
+        )
+
+        #expect(listed.idempotencyID == notListed.idempotencyID)
+    }
+
     @Test("Case and surrounding whitespace do not change the id")
     func normalizedInputsMatch() {
         let a = JournalingMoment(
@@ -203,22 +221,31 @@ struct JournalingMomentIdempotencyTests {
 
     /// The date is bucketed to the minute, so a start re-derived a few seconds apart
     /// still dedupes, while visits minutes apart stay distinct.
-    @Test("Seconds of drift keep the id; minutes apart change it")
+    ///
+    /// The bucket is a hard boundary, not a sliding window (see ``idempotencyID``):
+    /// this pins both halves — drift within one bucket keeps the id, and a straddle
+    /// of the bucket seam changes it — so the earlier assertion did not pass merely
+    /// because the fixture happened to sit far from a seam.
+    @Test("Same-bucket drift keeps the id; a bucket seam or minutes apart change it")
     func minuteBucket() {
-        let base = JournalingMoment(
-            content: .location(place: "Colosseo", city: "Roma"), date: visitDate, coordinate: nil
-        )
-        let fiveSeconds = JournalingMoment(
-            content: .location(place: "Colosseo", city: "Roma"),
-            date: visitDate.addingTimeInterval(5), coordinate: nil
-        )
-        let twoMinutes = JournalingMoment(
-            content: .location(place: "Colosseo", city: "Roma"),
-            date: visitDate.addingTimeInterval(120), coordinate: nil
-        )
+        func moment(at offset: TimeInterval) -> JournalingMoment {
+            JournalingMoment(
+                content: .location(place: "Colosseo", city: "Roma"),
+                date: visitDate.addingTimeInterval(offset), coordinate: nil
+            )
+        }
 
-        #expect(base.idempotencyID == fiveSeconds.idempotencyID)
-        #expect(base.idempotencyID != twoMinutes.idempotencyID)
+        // visitDate sits at second 20 of its minute; the round-to-nearest bucket
+        // seam is at second 30, i.e. +10s. So ±5s stays in the same bucket.
+        #expect(moment(at: 0).idempotencyID == moment(at: 5).idempotencyID)
+        #expect(moment(at: 0).idempotencyID == moment(at: -5).idempotencyID)
+
+        // Minutes apart is always a different bucket.
+        #expect(moment(at: 0).idempotencyID != moment(at: 120).idempotencyID)
+
+        // The seam: +9s and +11s are 2s apart but on opposite sides of the second-30
+        // mark, so they bucket differently. Accepted limitation, pinned here.
+        #expect(moment(at: 9).idempotencyID != moment(at: 11).idempotencyID)
     }
 
     // MARK: - Event poster (the branch nothing else exercises)

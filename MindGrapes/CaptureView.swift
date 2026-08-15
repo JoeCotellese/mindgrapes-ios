@@ -43,6 +43,13 @@ struct CaptureView: View {
     @State private var drainer: CaptureDrainer?
     @State private var queue: CaptureQueue?
     @State private var photoItem: PhotosPickerItem?
+    /// A moment picked from Journaling Suggestions, staged into the compose field
+    /// and waiting on the user's Save. It carries the visit date and coordinate so
+    /// ``save`` can stamp the note with when and where the moment happened rather
+    /// than now and here — the whole point of #52 — even after the user edits the
+    /// prefilled wording. `nil` whenever the field is a plain typed capture. Only
+    /// set on a device with the JournalingSuggestions SDK; inert everywhere else.
+    @State private var pendingVisit: JournalingMoment?
     @State private var showCamera = false
     @State private var showSettings = false
     /// How many pieces of work hold the interlock, not whether any does.
@@ -101,7 +108,12 @@ struct CaptureView: View {
                         // compiler cannot prove it.
                         nonisolated(unsafe) let picked = suggestion
                         if let moment = await journalingMoment(from: picked) {
-                            await addJournalingMoments([moment])
+                            prefill(with: moment)
+                        } else {
+                            // A picked suggestion we breadcrumb nothing from (no
+                            // date, or no place/title) still gets an answer rather
+                            // than a silent no-op.
+                            status = .suggestionNotUsable
                         }
                     }
                     .accessibilityHint("Opens Apple's picker to add moments to your memory")
@@ -143,6 +155,11 @@ struct CaptureView: View {
         .onChange(of: scenePhase) { _, phase in
             // Foregrounding drains anything that backed off while away.
             if phase == .active, drainer != nil { Task { await drain() } }
+        }
+        .onChange(of: text) { _, new in
+            // Emptying the field drops any staged visit: whatever is typed next is a
+            // fresh capture at today and here, not that suggestion's date and place.
+            if new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { pendingVisit = nil }
         }
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
@@ -283,6 +300,10 @@ struct CaptureView: View {
     private func save() {
         guard NoteDraft(content: text) != nil, let runner else { return }
         let content = text
+        // A moment staged from Journaling Suggestions carries its own when and
+        // where. Captured before the await so a foreground drain cannot clear it
+        // mid-send; consumed only once this save reaches durable storage.
+        let staged = pendingVisit
         activeWork += 1
         status = .working
         Task {
@@ -293,18 +314,33 @@ struct CaptureView: View {
                 // wrong app. Re-arm it.
                 composing = true
             }
-            let (fix, locationJustDenied) = await locationFix()
-            let outcome = CaptureStatus(outcome: await runner.captureNote(content, location: fix))
+            let outcome: CaptureStatus
+            if let staged {
+                // Stamp the visit date and the suggestion's coordinate, not now and
+                // the current fix — "when did we see the David" has to answer with
+                // the day of the visit (#52). This holds even though the user may
+                // have reworded the prefilled text; the date and place are the
+                // moment's, the words are theirs. No location toggle applies: the
+                // user is not here now, so there is nothing to turn off.
+                let fix = staged.coordinate.map { LocationFix(coordinate: $0, placeLabel: nil) }
+                outcome = CaptureStatus(outcome: await runner.captureNote(content, location: fix, now: staged.date))
+            } else {
+                let (fix, locationJustDenied) = await locationFix()
+                let raw = CaptureStatus(outcome: await runner.captureNote(content, location: fix))
+                outcome = raw.resolving(locationJustDenied: locationJustDenied)
+            }
             // Take back only what reached durable storage. The field stays editable
             // during the send and the screen re-arms focus to invite exactly that,
             // so `text = ""` would delete whatever was typed while waiting — and
             // leaving the sent words in place would get them captured twice on the
             // next tap. Dropping the prefix does neither. A mid-string edit falls
             // through and keeps everything, which is the safe direction.
-            if outcome.draftBecameDurable, text.hasPrefix(content) {
-                text.removeFirst(content.count)
+            if outcome.draftBecameDurable {
+                if text.hasPrefix(content) { text.removeFirst(content.count) }
+                // The staged visit is spent; the next note is a plain capture again.
+                pendingVisit = nil
             }
-            status = outcome.resolving(locationJustDenied: locationJustDenied)
+            status = outcome
         }
     }
 
@@ -327,30 +363,38 @@ struct CaptureView: View {
         }
     }
 
-    /// Commits the moments a Journaling Suggestions pull selected, then drains so
-    /// they reach the server (#52).
+    #if canImport(JournalingSuggestions)
+    /// Drops a picked suggestion's breadcrumb text into the compose field for the
+    /// user to review and edit before saving, rather than committing it silently
+    /// (#52). The visit date and coordinate ride along in ``pendingVisit`` so
+    /// ``save`` can stamp them even after the wording is edited.
     ///
-    /// The heavy lifting is the Kit's ``JournalingCommit``: it enqueues each usable
-    /// moment under its stable id, skipping text-less ones and deduping re-pulls,
-    /// and returns how many were new. The screen only reports that count and drives
-    /// the same drain every capture uses, so a pull made offline or signed out
-    /// parks and re-auths exactly like a typed note. The auto-commit result is
-    /// announced to VoiceOver by the status line's own `onChange`.
-    private func addJournalingMoments(_ moments: [JournalingMoment]) async {
-        guard let queue, !busy else { return }
-        activeWork += 1
-        do {
-            let added = try await JournalingCommit.commit(moments, to: queue)
-            status = .momentsAdded(count: added)
-        } catch {
-            log.error("journaling commit failed: \(String(describing: error), privacy: .public)")
-            status = .captureLost
+    /// Only fills an empty field: the field is focused-empty at launch, so this is
+    /// the usual case, and overwriting a thought the user is mid-way through typing
+    /// would lose it. A pick onto a non-empty field is refused with a nudge instead.
+    /// A suggestion that carries nothing we breadcrumb reports that, so a tap is
+    /// never a silent no-op.
+    ///
+    /// This replaces the earlier auto-commit path. The Kit's ``JournalingCommit``
+    /// and the ``CaptureStatus/momentsAdded(count:)`` copy remain for Phase 5, where
+    /// a system notification commits a moment with no compose field in the loop.
+    private func prefill(with moment: JournalingMoment) {
+        guard let draft = moment.noteDraft() else {
+            // Mapped, but its text was blank — nothing to file under.
+            log.error("prefill: moment.noteDraft() was nil, nothing to prefill")
+            status = .suggestionNotUsable
+            return
         }
-        activeWork -= 1
-        // Deliver now. The drain reports sending → sent over the confirmation; the
-        // durable records survive to the next foreground even if it cannot.
-        await drain()
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            status = .suggestionNeedsEmptyField
+            return
+        }
+        text = draft.content
+        pendingVisit = moment
+        status = .ready
+        composing = true
     }
+    #endif
 
     /// The location fix to attach, and whether this call is what turned the
     /// setting off.

@@ -8,6 +8,12 @@
 import CoreLocation
 import JournalingSuggestions
 import MindGrapesKit
+import OSLog
+
+// Traces why a picked suggestion maps to nil, so a beta failure at this
+// framework boundary leaves a breadcrumb. Logs only counts and presence flags,
+// never the place, city, or title text, which is the user's location history.
+private let adapterLog = Logger(subsystem: "net.cotellese.mindgrapes", category: "journaling")
 
 /// Reads a selected suggestion into a ``JournalingMoment``, or `nil` when it
 /// carries nothing we breadcrumb (#52).
@@ -27,22 +33,29 @@ import MindGrapesKit
 /// `nonisolated(unsafe)`; the value returned, a ``JournalingMoment``, is `Sendable`
 /// and crosses back out freely.
 func journalingMoment(from suggestion: JournalingSuggestion) async -> JournalingMoment? {
-    guard let date = suggestion.date?.start else { return nil }
+    guard let date = suggestion.date?.start else {
+        adapterLog.error("journalingMoment: skipped, suggestion has no date")
+        return nil
+    }
 
     // A multi-place outing. One usable place reads better as a single location.
     let groups = await suggestion.content(forType: JournalingSuggestion.LocationGroup.self)
+    adapterLog.info("journalingMoment: locationGroups=\(groups.count, privacy: .public) firstLocations=\(groups.first?.locations.count ?? -1, privacy: .public)")
     if let group = groups.first, !group.locations.isEmpty {
         if group.locations.count == 1, let only = group.locations.first {
+            adapterLog.info("journalingMoment: group→single hasPlace=\(only.place?.isEmpty == false, privacy: .public) hasCity=\(only.city != nil, privacy: .public)")
             return JournalingMoment(
                 content: .location(place: only.place ?? "", city: only.city),
                 date: date,
                 coordinate: coordinate(from: only.location)
             )
         }
+        let groupPlaces = group.locations.compactMap(\.place)
+        adapterLog.info("journalingMoment: group usablePlaces=\(groupPlaces.count, privacy: .public)")
         return JournalingMoment(
             content: .locationGroup(
                 city: group.locations.first?.city,
-                places: group.locations.compactMap(\.place)
+                places: groupPlaces
             ),
             date: date,
             coordinate: coordinate(from: group.locations.first?.location)
@@ -51,6 +64,7 @@ func journalingMoment(from suggestion: JournalingSuggestion) async -> Journaling
 
     // A single visited place.
     let locations = await suggestion.content(forType: JournalingSuggestion.Location.self)
+    adapterLog.info("journalingMoment: locations=\(locations.count, privacy: .public) firstHasPlace=\(locations.first?.place?.isEmpty == false, privacy: .public)")
     if let location = locations.first {
         return JournalingMoment(
             content: .location(place: location.place ?? "", city: location.city),
@@ -61,6 +75,7 @@ func journalingMoment(from suggestion: JournalingSuggestion) async -> Journaling
 
     // An event poster. The title is an AttributedString; take its plain text.
     let posters = await suggestion.content(forType: JournalingSuggestion.EventPoster.self)
+    adapterLog.info("journalingMoment: posters=\(posters.count, privacy: .public)")
     if let poster = posters.first {
         return JournalingMoment(
             content: .eventPoster(title: String(poster.title.characters), place: poster.placeName),
@@ -69,6 +84,7 @@ func journalingMoment(from suggestion: JournalingSuggestion) async -> Journaling
         )
     }
 
+    adapterLog.error("journalingMoment: no location/group/poster content matched, returning nil")
     return nil
 }
 

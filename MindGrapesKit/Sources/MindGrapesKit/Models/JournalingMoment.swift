@@ -84,9 +84,17 @@ public struct JournalingMoment: Sendable, Equatable {
         case let .locationGroup(city, places):
             let usable = Self.dedupePreservingOrder(places.compactMap(\.nonBlank))
             guard !usable.isEmpty else { return nil }
-            let list = usable.joined(separator: ", ")
-            guard let city = city?.nonBlank else { return "Visited \(list)" }
-            return "Visited \(city): \(list)"
+            guard let city = city?.nonBlank else {
+                return "Visited \(usable.joined(separator: ", "))"
+            }
+            // The city already prefixes the line, so a place that only repeats it
+            // reads twice ("Visited Firenze: Firenze") — the same doubling the
+            // single-location branch above collapses. Drop a place that is the
+            // city, and strip a ", City" that Apple pre-qualified a place with, so
+            // the city is named once. If nothing is left, the city is the breadcrumb.
+            let distinct = usable.compactMap { Self.strippingCity(city, from: $0) }
+            guard !distinct.isEmpty else { return "Visited \(city)" }
+            return "Visited \(city): \(distinct.joined(separator: ", "))"
 
         case let .eventPoster(title, place):
             let place = place?.nonBlank
@@ -118,6 +126,20 @@ public struct JournalingMoment: Sendable, Equatable {
             || place.lowercased().hasSuffix(", \(city.lowercased())")
     }
 
+    /// A group place with the redundant `city` removed for a "Visited {city}: …"
+    /// line, or `nil` when the place *is* the city and should drop out entirely.
+    /// The grouped counterpart to ``place(_:alreadyNames:)``: "Firenze" drops, and
+    /// "Galleria dell'Accademia, Firenze" loses its ", Firenze" so the city is not
+    /// named twice on one line.
+    private static func strippingCity(_ city: String, from place: String) -> String? {
+        if place.caseInsensitiveCompare(city) == .orderedSame { return nil }
+        let suffix = ", \(city)"
+        if place.lowercased().hasSuffix(suffix.lowercased()) {
+            return String(place.dropLast(suffix.count)).nonBlank
+        }
+        return place
+    }
+
     /// Places with case-insensitive duplicates removed, first occurrence kept.
     ///
     /// Apple can list the same place twice in one group; a note reading "Duomo,
@@ -145,6 +167,14 @@ public struct JournalingMoment: Sendable, Equatable {
     /// records far more often than it would ever separate two real visits. And
     /// **sub-minute precision**, for the same reason — the note's own `occurred_at`
     /// keeps the exact instant; the id only needs enough to tell visits apart.
+    ///
+    /// The minute bucket is a hard boundary, not a sliding window: it tolerates the
+    /// sub-minute jitter a re-pull carries *within* one bucket, but two starts a few
+    /// seconds apart that straddle a minute mark fall in different buckets and derive
+    /// different ids. That is an accepted limitation — it needs Apple's reported start
+    /// to actually drift across the mark between pulls, which is unobserved — and
+    /// ``JournalingMomentIdempotencyTests/minuteBucket()`` pins it, so moving to a
+    /// coarser or sliding bucket is a deliberate change rather than an accident.
     ///
     /// The text reuses ``composedText`` (a group is rebuilt with its places sorted,
     /// since only the group has an order), so the place-carries-city and place==city
@@ -179,13 +209,18 @@ public struct JournalingMoment: Sendable, Equatable {
         case .location, .eventPoster:
             return composedText ?? ""
         case let .locationGroup(city, places):
-            let sorted = Set(places.compactMap(\.nonBlank).map(Self.foldForKey))
-                .filter { !$0.isEmpty }
-                .sorted()
-            guard !sorted.isEmpty else { return "" }
-            let list = sorted.joined(separator: ", ")
-            guard let city = city?.nonBlank else { return "Visited \(list)" }
-            return "Visited \(Self.foldForKey(city)): \(list)"
+            let folded = places.compactMap(\.nonBlank).map(Self.foldForKey).filter { !$0.isEmpty }
+            guard let city = city?.nonBlank.map(Self.foldForKey), !city.isEmpty else {
+                let sorted = Set(folded).sorted()
+                guard !sorted.isEmpty else { return "" }
+                return "Visited \(sorted.joined(separator: ", "))"
+            }
+            // The same city collapse the display does, so a group that renders
+            // "Visited Firenze: Duomo" keys identically whether or not Apple also
+            // listed the city itself among the places on either pull.
+            let distinct = Set(folded.compactMap { Self.strippingCity(city, from: $0) }).sorted()
+            guard !distinct.isEmpty else { return "Visited \(city)" }
+            return "Visited \(city): \(distinct.joined(separator: ", "))"
         }
     }
 

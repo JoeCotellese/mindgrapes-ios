@@ -261,6 +261,38 @@ struct JournalingMomentTests {
         #expect(try #require(placeIsCity.noteDraft()).content == "Visited Firenze")
     }
 
+    @Test("A group place that is the city drops out rather than doubling it")
+    func groupPlaceThatIsCityDrops() throws {
+        // Apple can list the locality itself among a multi-place group. Prefixed by
+        // "Visited Firenze:", repeating "Firenze" reads "Visited Firenze: Firenze".
+        let mixed = JournalingMoment(
+            content: .locationGroup(city: "Firenze", places: ["Firenze", "Duomo"]),
+            date: visitDate, coordinate: nil
+        )
+        let onlyCity = JournalingMoment(
+            content: .locationGroup(city: "Firenze", places: ["firenze"]),
+            date: visitDate, coordinate: nil
+        )
+
+        #expect(try #require(mixed.noteDraft()).content == "Visited Firenze: Duomo")
+        #expect(try #require(onlyCity.noteDraft()).content == "Visited Firenze")
+    }
+
+    @Test("A group place pre-qualified with its city is stripped, not doubled")
+    func groupPlaceQualifiedWithCityIsStripped() throws {
+        let moment = JournalingMoment(
+            content: .locationGroup(
+                city: "Firenze", places: ["Galleria dell'Accademia, Firenze", "Duomo"]
+            ),
+            date: visitDate, coordinate: nil
+        )
+
+        #expect(
+            try #require(moment.noteDraft()).content
+                == "Visited Firenze: Galleria dell'Accademia, Duomo"
+        )
+    }
+
     @Test("A group with a blank city just lists the places")
     func groupBlankCity() throws {
         let moment = JournalingMoment(

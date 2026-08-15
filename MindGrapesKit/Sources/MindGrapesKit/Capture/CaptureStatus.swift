@@ -68,6 +68,19 @@ public enum CaptureStatus: Equatable, Sendable {
     /// (all already saved) reports zero rather than a false "added".
     case momentsAdded(count: Int)
 
+    /// A Journaling Suggestion was picked while the compose field already held
+    /// text. The pick prefills the field for editing, and overwriting an
+    /// in-progress thought would lose it, so the pick is refused with a nudge
+    /// rather than silently dropped (#52). Needs the user to clear the field, but
+    /// is not a failure — nothing was lost.
+    case suggestionNeedsEmptyField
+
+    /// A picked Journaling Suggestion carried nothing to file under — no place or
+    /// event title, or no date to stamp — so there was nothing to prefill. Its own
+    /// message rather than ``nothingToSave``, which reads as "you have not typed
+    /// anything" and would misname a suggestion the user did pick (#52).
+    case suggestionNotUsable
+
     /// The location toggle was on but permission is denied, so this capture
     /// carried no location.
     case locationOff
@@ -164,8 +177,8 @@ public enum CaptureStatus: Equatable, Sendable {
     /// emphasis, and keeps "will sync" from being styled like a problem.
     public var isFailure: Bool {
         switch self {
-        case .ready, .working, .syncing, .saved, .queued, .pending, .synced, .momentsAdded, .locationOff,
-            .savedWithoutLocation:
+        case .ready, .working, .syncing, .saved, .queued, .pending, .synced, .momentsAdded,
+            .suggestionNeedsEmptyField, .suggestionNotUsable, .locationOff, .savedWithoutLocation:
             false
         case .needsSignIn, .sendFailed, .nothingToSave, .unreadableImage, .captureLost, .storageUnavailable,
             .notSignedIn:

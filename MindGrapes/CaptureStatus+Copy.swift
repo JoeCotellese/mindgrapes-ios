@@ -23,6 +23,12 @@ extension CaptureStatus {
         case .momentsAdded(0): "Those are already in your memory."
         case .momentsAdded(1): "Added 1 moment to memory."
         case .momentsAdded(let count): "Added \(count) moments to memory."
+        // The pick prefilled nothing because the field was occupied; tell the user
+        // the one thing that unblocks it rather than overwriting their words.
+        case .suggestionNeedsEmptyField: "Clear the field first to add a suggestion."
+        // A picked suggestion we could not turn into a breadcrumb: says so plainly
+        // rather than the misleading "Nothing to save yet."
+        case .suggestionNotUsable: "That suggestion had no place or date to save."
         case .needsSignIn: "Saved. Sign in again to send it."
         case .sendFailed: "Saved here, but the server refused it."
         case .nothingToSave: "Nothing to save yet."
@@ -44,6 +50,10 @@ extension CaptureStatus {
         switch self {
         case .ready, .working, .syncing: nil
         case .saved, .synced, .momentsAdded: "checkmark.circle.fill"
+        // The picker's own glyph, so the nudge reads as "that button, once the
+        // field is clear" rather than an error.
+        case .suggestionNeedsEmptyField: "text.badge.plus"
+        case .suggestionNotUsable: "questionmark.circle"
         case .queued, .pending: "arrow.triangle.2.circlepath"
         case .needsSignIn, .notSignedIn: "person.crop.circle.badge.exclamationmark"
         case .locationOff, .savedWithoutLocation: "location.slash"
