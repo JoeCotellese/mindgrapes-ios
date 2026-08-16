@@ -56,6 +56,10 @@ targets:
       # counterparts — an independent watch app could not reach the phone at all
       # (SPEC 4.2, Decision 5).
       - target: MindGrapesWatch
+      # Embeds the share extension into this bundle's PlugIns/ directory so an
+      # iOS share sheet can send text, a URL, or an image into MindGrapes
+      # (SPEC 4.2, #50).
+      - target: MindGrapesShare
     # Signing.xcconfig supplies DEVELOPMENT_TEAM from an untracked local file for
     # device and release builds. It is empty by default, so a clone with nothing
     # set up still generates and builds for the simulator.
@@ -159,6 +163,45 @@ targets:
         # SPEC 9: the fix is taken on the wrist, because a capture made on a run
         # should record where the runner was, not where the phone caught up.
         NSLocationWhenInUseUsageDescription: MindGrapes tags a capture with where you made it, when you turn location on.
+
+  # The share-sheet entry point. Enqueue-only (#50): it writes text, a URL, or an
+  # image into the App Group outbox the app owns and dies with the sheet; the app
+  # delivers on its next foreground drain. App Group entitlement only, no Keychain
+  # group, because it reads no tokens (which also sidesteps the -34018 blocker).
+  MindGrapesShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: MindGrapesShare
+    dependencies:
+      - package: MindGrapesKit
+        product: MindGrapesKit
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.cotellese.mindgrapes.share
+        CODE_SIGN_ENTITLEMENTS: MindGrapesShare/MindGrapesShare.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        # The bundle display name in the share sheet row.
+        INFOPLIST_KEY_CFBundleDisplayName: MindGrapes
+    info:
+      path: MindGrapesShare/Info.plist
+      properties:
+        CFBundleDisplayName: MindGrapes
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          # Runs GetReadablePage.js in a shared Safari page to extract
+          # {url, title, text}, so a URL share reads like the browser extension.
+          NSExtensionJavaScriptPreprocessingFile: GetReadablePage
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsWebPageWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 1
 
 schemes:
   MindGrapes:

@@ -19,6 +19,7 @@ build/
 # and reintroduce merge conflicts; regenerate instead.
 MindGrapes/Info.plist
 MindGrapesWatch/Info.plist
+MindGrapesShare/Info.plist
 
 # Swift Package Manager
 .build/

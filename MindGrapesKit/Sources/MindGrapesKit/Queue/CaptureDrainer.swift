@@ -107,6 +107,7 @@ public struct CaptureDrainer: Sendable {
         do {
             let body = try await queue.noteBody(id: id, timeZone: timeZone)
             let response = try await client.postNote(body: body, accessToken: token)
+            log.info("note \(id, privacy: .public) sent: experience \(response.experienceID, privacy: .public)")
             try await queue.markSucceeded(id: id, experienceID: response.experienceID)
         } catch let error as BrainClientError {
             // The queue classifies by disposition: terminal fails the record,

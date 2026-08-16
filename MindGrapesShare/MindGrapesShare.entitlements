@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Group only. The extension enqueues into the shared SwiftData store
+	     and photo spool the app owns; it never reads tokens, so it needs no
+	     keychain-access-group and sidesteps the -34018 provisioning blocker
+	     (#50 enqueue-only). Add the shared keychain group only when the
+	     extension gains inline upload, alongside the background URLSession (#21). -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.net.cotellese.mindgrapes</string>
+	</array>
+</dict>
+</plist>
