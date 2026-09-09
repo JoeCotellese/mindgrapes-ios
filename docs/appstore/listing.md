@@ -123,7 +123,7 @@ BEFORE YOU INSTALL
 
 You need a running Mind Grapes server your device can reach, and an account on it. Setup is a URL and a sign-in. If that reads like work rather than like a feature, this app is not for you, and that is a fine outcome for both of us.
 
-The app is open source: github.com/JoeCotellese/mindgrapes-ios
+The app is open source: github.com/MindgrapesApp/mindgrapes-ios
 ```
 
 ### What the description deliberately does not claim
@@ -167,9 +167,9 @@ in anyway: it is the version-history entry people read a year from now.
 ## URLs
 
 - **Support URL** — TODO. Required; App Store Connect will not accept the
-  version without one. `https://github.com/JoeCotellese/mindgrapes-ios/issues`
+  version without one. `https://github.com/MindgrapesApp/mindgrapes-ios/issues`
   is a legitimate answer for an open-source app and costs nothing to stand up.
-- **Marketing URL** — TODO, optional. `https://github.com/JoeCotellese/mindgrapes-ios`
+- **Marketing URL** — TODO, optional. `https://github.com/MindgrapesApp/mindgrapes-ios`
   if nothing better exists by submission time.
 - **Privacy Policy URL** — TODO. Required for every app, no exceptions, and it
   is a separate field from the privacy questionnaire. See
@@ -204,6 +204,6 @@ Two things go in the App Store Connect submission form, and neither exists yet:
 2. **Review notes** spelling out that the app is a client for self-hosted
    server software, that the demo server is provided solely for review, and
    where the server itself lives
-   (`https://github.com/JoeCotellese/mindgrapes-server`).
+   (`https://github.com/MindgrapesApp/mindgrapes-server`).
 
 TODO both. This is a bigger blocker than any copy on this page.

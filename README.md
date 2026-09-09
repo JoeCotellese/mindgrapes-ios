@@ -1,6 +1,6 @@
 # MindGrapes iOS
 
-Capture surface for a self-hosted [Mind Grapes](https://github.com/JoeCotellese/mindgrapes-server)
+Capture surface for a self-hosted [Mind Grapes](https://github.com/MindgrapesApp/mindgrapes-server)
 server. Text and photos, from the app, Siri, Shortcuts, the Share Sheet, and
 the Watch. Not a browsing app: the point is getting something into the brain
 in under five seconds.
