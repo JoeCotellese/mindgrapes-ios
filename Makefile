@@ -55,6 +55,11 @@ build: generate ## Build the app for the simulator
 # release must come from a committed tree that passes the suite. test-repeat is
 # the same serial gate the pre-push hook runs; check-clean goes first so a dirty
 # tree fails before any tests run.
+# That order only holds serially: under `make -j` the prerequisites start
+# together. GNU Make 3.81 (macOS) ignores .NOTPARALLEL's prerequisites and
+# serializes the whole file, which costs nothing since no target here relies on -j.
+.NOTPARALLEL:
+
 .PHONY: check-clean
 check-clean: ## Fail if the working tree has uncommitted or untracked changes
 	@[ -z "$$(git status --porcelain)" ] || { \
