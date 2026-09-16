@@ -78,11 +78,19 @@ BUILD="${BUILD_NUMBER:-$(git rev-list --count HEAD)}"
 echo "==> Archiving build $BUILD"
 rm -rf "$ARCHIVE"
 mkdir -p "$BUILD_DIR"
+# Archiving signs every embedded target (app, share extension, watch app) with a
+# development profile. Without -allowProvisioningUpdates it uses only profiles
+# already on disk, so a target never built for a device here (the watch app)
+# fails with "No profiles for ... were found". The API key lets it mint them.
 xcodebuild archive \
     -project MindGrapes.xcodeproj \
     -scheme MindGrapes \
     -destination 'generic/platform=iOS' \
     -archivePath "$ARCHIVE" \
+    -allowProvisioningUpdates \
+    -authenticationKeyPath "$ASC_KEY_PATH" \
+    -authenticationKeyID "$ASC_KEY_ID" \
+    -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
     DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
     CURRENT_PROJECT_VERSION="$BUILD"
 
