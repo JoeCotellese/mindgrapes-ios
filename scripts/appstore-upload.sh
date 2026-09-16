@@ -116,9 +116,12 @@ rm -rf "$EXPORT_DIR"
 # -allowProvisioningUpdates plus the App Store Connect API key lets xcodebuild
 # create and download the iOS Distribution certificate and provisioning profile
 # on demand, so a machine that has never signed in to Xcode with this account can
-# still export for the store. The key must have the Admin role: this signs with a
-# cloud-managed distribution certificate, and an App Manager key fails export with
-# "Cloud signing permission error" even when a local distribution cert exists.
+# still export for the store. In practice an App Manager key could not do that
+# alone: with no App Store profiles on disk it fell back to cloud signing and
+# failed with "Cloud signing permission error". An App Manager key exports fine
+# once this Mac has an Apple Distribution cert (Xcode > Settings > Accounts >
+# Manage Certificates) and one Xcode-account export has fetched the App Store
+# profiles (run the export without the -authentication* flags).
 xcodebuild -exportArchive \
     -archivePath "$ARCHIVE" \
     -exportOptionsPlist "$EXPORT_PLIST" \
