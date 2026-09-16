@@ -4,13 +4,12 @@
 SIMULATOR ?= platform=iOS Simulator,name=iPhone 17 Pro
 REPEAT ?= 5
 
-# The app needs the iOS 27 SDK for the `.notes.createNote` app schema, and
-# `xcode-select` still points at the released Xcode. Overriding here rather than
-# switching the machine's active developer directory keeps the rest of the
-# system on the stable toolchain. Collapse this to the plain path once 27 ships.
+# The app needs the iOS 27 SDK for the `.notes.createNote` app schema. Pinning
+# Xcode here rather than trusting `xcode-select` keeps builds on 27 even when the
+# machine's active developer directory points somewhere else.
 # ponytail: one variable, no toolchain-detection logic; override on the command
-# line (`make build DEVELOPER_DIR=...`) if the beta lives elsewhere.
-DEVELOPER_DIR ?= /Applications/Xcode-beta.app/Contents/Developer
+# line (`make build DEVELOPER_DIR=...`) if Xcode lives elsewhere.
+DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 export DEVELOPER_DIR
 
 .PHONY: test
