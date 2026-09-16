@@ -7,6 +7,10 @@
 # https://appstoreconnect.apple.com/access/integrations/api. DEVELOPMENT_TEAM is
 # your ten-character Apple Developer Team ID, needed to sign the export.
 #
+# Run it through `make release` (or `make release-validate`): Make loads .env,
+# requires a clean tree and a passing suite, and regenerates the project first.
+# Calling the script directly skips all of that.
+#
 # Load them however you like; the repo ships a `.env.example` to copy:
 #   set -a; . ./.env; set +a; ./scripts/appstore-upload.sh
 #
@@ -33,8 +37,6 @@ require ASC_KEY_PATH
 require DEVELOPMENT_TEAM
 
 [ -f "$ASC_KEY_PATH" ] || fail "ASC_KEY_PATH points at no file: $ASC_KEY_PATH"
-
-command -v xcodegen >/dev/null 2>&1 || fail "xcodegen not found. brew install xcodegen."
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO_ROOT"
@@ -72,9 +74,6 @@ EXPORT_PLIST="$BUILD_DIR/ExportOptions.plist"
 # archive time.
 BUILD="${BUILD_NUMBER:-$(git rev-list --count HEAD)}"
 [ -n "$BUILD" ] || fail "could not compute a build number (git rev-list failed)"
-
-echo "==> Regenerating the project"
-make generate >/dev/null
 
 echo "==> Archiving build $BUILD"
 rm -rf "$ARCHIVE"
