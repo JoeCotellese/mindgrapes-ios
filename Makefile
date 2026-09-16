@@ -4,13 +4,12 @@
 SIMULATOR ?= platform=iOS Simulator,name=iPhone 17 Pro
 REPEAT ?= 5
 
-# The app needs the iOS 27 SDK for the `.notes.createNote` app schema, and
-# `xcode-select` still points at the released Xcode. Overriding here rather than
-# switching the machine's active developer directory keeps the rest of the
-# system on the stable toolchain. Collapse this to the plain path once 27 ships.
+# The app needs the iOS 27 SDK for the `.notes.createNote` app schema. Pinning
+# Xcode here rather than trusting `xcode-select` keeps builds on 27 even when the
+# machine's active developer directory points somewhere else.
 # ponytail: one variable, no toolchain-detection logic; override on the command
-# line (`make build DEVELOPER_DIR=...`) if the beta lives elsewhere.
-DEVELOPER_DIR ?= /Applications/Xcode-beta.app/Contents/Developer
+# line (`make build DEVELOPER_DIR=...`) if Xcode lives elsewhere.
+DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 export DEVELOPER_DIR
 
 .PHONY: test
@@ -52,20 +51,38 @@ build: generate ## Build the app for the simulator
 		-destination '$(SIMULATOR)' \
 		CODE_SIGNING_ALLOWED=NO build
 
+# An upload can't be taken back, and the build number is the commit count, so a
+# release must come from a committed tree that passes the suite. test-repeat is
+# the same serial gate the pre-push hook runs; check-clean goes first so a dirty
+# tree fails before any tests run.
+# That order only holds serially: under `make -j` the prerequisites start
+# together. GNU Make 3.81 (macOS) ignores .NOTPARALLEL's prerequisites and
+# serializes the whole file, which costs nothing since no target here relies on -j.
+.NOTPARALLEL:
+
+.PHONY: check-clean
+check-clean: ## Fail if the working tree has uncommitted or untracked changes
+	@[ -z "$$(git status --porcelain)" ] || { \
+		echo "error: working tree is not clean; commit or stash before releasing" >&2; \
+		git status --short >&2; exit 1; }
+
+# Recipes run under /bin/sh, so sourcing .env here works from any login shell.
+LOAD_ENV = if [ -f .env ]; then set -a; . ./.env; set +a; fi
+
 .PHONY: release-validate
-release-validate: ## Archive and validate against App Store Connect (no submit; needs .env)
-	VALIDATE=1 ./scripts/appstore-upload.sh
+release-validate: check-clean test-repeat generate ## Archive and validate against App Store Connect (no submit; needs .env)
+	@$(LOAD_ENV); VALIDATE=1 ./scripts/appstore-upload.sh
 
 .PHONY: release
-release: ## Archive, export, and upload the app to App Store Connect (needs .env)
-	./scripts/appstore-upload.sh
+release: check-clean test-repeat generate ## Archive, export, and upload the app to App Store Connect (needs .env)
+	@$(LOAD_ENV); ./scripts/appstore-upload.sh
 
 .PHONY: devices
 devices: ## List connected devices and their identifiers
 	xcrun devicectl list devices
 
 .PHONY: device
-device: ## Build signed and install on a device (DEVICE="Development iPhone")
+device: generate ## Build signed and install on a device (DEVICE="Development iPhone")
 	./scripts/install-device.sh
 
 .PHONY: clean

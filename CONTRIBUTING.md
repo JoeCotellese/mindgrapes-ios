@@ -54,10 +54,13 @@ API key (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_PATH`) plus your
 `DEVELOPMENT_TEAM`. Then:
 
 ```sh
-set -a; . ./.env; set +a   # load the secrets into this shell only
 make release-validate      # archive + App Store validation, no submission
 make release               # archive, export, and upload for real
 ```
+
+Both targets load `.env` themselves, so this works from any shell. They refuse
+to run from a tree with uncommitted or untracked changes, and they run
+`make test-repeat` (the pre-push gate) before archiving.
 
 Run `make release-validate` first: it catches almost everything an upload
 would reject without consuming a build number. The API key's `.p8` is copied

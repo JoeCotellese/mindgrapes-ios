@@ -27,9 +27,6 @@ cd "$REPO_ROOT"
 DERIVED="$REPO_ROOT/build/device"
 APP="$DERIVED/Build/Products/Debug-iphoneos/MindGrapes.app"
 
-echo "==> Regenerating the project"
-make generate >/dev/null
-
 # -allowProvisioningUpdates lets automatic signing register the device and mint
 # a development profile for the app's bundle id and entitlements on first run.
 echo "==> Building signed for '$DEVICE'"

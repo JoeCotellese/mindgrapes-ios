@@ -7,6 +7,10 @@
 # https://appstoreconnect.apple.com/access/integrations/api. DEVELOPMENT_TEAM is
 # your ten-character Apple Developer Team ID, needed to sign the export.
 #
+# Run it through `make release` (or `make release-validate`): Make loads .env,
+# requires a clean tree and a passing suite, and regenerates the project first.
+# Calling the script directly skips all of that.
+#
 # Load them however you like; the repo ships a `.env.example` to copy:
 #   set -a; . ./.env; set +a; ./scripts/appstore-upload.sh
 #
@@ -33,8 +37,6 @@ require ASC_KEY_PATH
 require DEVELOPMENT_TEAM
 
 [ -f "$ASC_KEY_PATH" ] || fail "ASC_KEY_PATH points at no file: $ASC_KEY_PATH"
-
-command -v xcodegen >/dev/null 2>&1 || fail "xcodegen not found. brew install xcodegen."
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO_ROOT"
@@ -73,17 +75,22 @@ EXPORT_PLIST="$BUILD_DIR/ExportOptions.plist"
 BUILD="${BUILD_NUMBER:-$(git rev-list --count HEAD)}"
 [ -n "$BUILD" ] || fail "could not compute a build number (git rev-list failed)"
 
-echo "==> Regenerating the project"
-make generate >/dev/null
-
 echo "==> Archiving build $BUILD"
 rm -rf "$ARCHIVE"
 mkdir -p "$BUILD_DIR"
+# Archiving signs every embedded target (app, share extension, watch app) with a
+# development profile. Without -allowProvisioningUpdates it uses only profiles
+# already on disk, so a target never built for a device here (the watch app)
+# fails with "No profiles for ... were found". The API key lets it mint them.
 xcodebuild archive \
     -project MindGrapes.xcodeproj \
     -scheme MindGrapes \
     -destination 'generic/platform=iOS' \
     -archivePath "$ARCHIVE" \
+    -allowProvisioningUpdates \
+    -authenticationKeyPath "$ASC_KEY_PATH" \
+    -authenticationKeyID "$ASC_KEY_ID" \
+    -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
     DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
     CURRENT_PROJECT_VERSION="$BUILD"
 
@@ -109,7 +116,12 @@ rm -rf "$EXPORT_DIR"
 # -allowProvisioningUpdates plus the App Store Connect API key lets xcodebuild
 # create and download the iOS Distribution certificate and provisioning profile
 # on demand, so a machine that has never signed in to Xcode with this account can
-# still export for the store. The key must have an App Manager (or Admin) role.
+# still export for the store. In practice an App Manager key could not do that
+# alone: with no App Store profiles on disk it fell back to cloud signing and
+# failed with "Cloud signing permission error". An App Manager key exports fine
+# once this Mac has an Apple Distribution cert (Xcode > Settings > Accounts >
+# Manage Certificates) and one Xcode-account export has fetched the App Store
+# profiles (run the export without the -authentication* flags).
 xcodebuild -exportArchive \
     -archivePath "$ARCHIVE" \
     -exportOptionsPlist "$EXPORT_PLIST" \

@@ -60,7 +60,7 @@ screenshots come free from the same instance.
 The pipeline itself is fine. Signed in, this produces real shots:
 
 ```sh
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer   # iOS 27 SDK
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer   # Xcode 27, iOS 27 SDK
 make build
 APP=~/Library/Developer/Xcode/DerivedData/MindGrapes-*/Build/Products/Debug-iphonesimulator/MindGrapes.app
 
@@ -74,7 +74,8 @@ xcrun simctl io "iPhone 17 Pro" screenshot shot.png
 Confirmed on 2026-07-27: installs, launches, and writes a 1206 x 2622 PNG of the
 connect screen. `DEVELOPER_DIR` is load-bearing — the released Xcode's
 simulators run iOS 26 and the install fails with "Requires a Newer Version of
-iOS", since the app's floor is iOS 27.
+iOS", since the app's floor is iOS 27. That run used Xcode-beta; Xcode 27 has since
+shipped, so the paths above now point at Xcode.app.
 
 ## The devices are not installed yet
 
@@ -86,7 +87,7 @@ The device types and runtimes are both present, so this is one `simctl create`
 each, not a download:
 
 ```sh
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 xcrun simctl create "Shots 6.9" \
   com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro-Max \
   com.apple.CoreSimulator.SimRuntime.iOS-27-0
